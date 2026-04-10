@@ -58,8 +58,8 @@ def _make_system_prompt(language: str = "English", include_fu: bool = False) -> 
     fu_note = (
         f"\n\nAfter your answer, output a single line containing exactly '---FU---', "
         f"then write exactly 3 short follow-up questions "
-        f"{f'in {language} ' if language != \"English\" else ''}"
-        "numbered 1. 2. 3. (each under 12 words)."
+        + (f"in {language} " if language != "English" else "")
+        + "numbered 1. 2. 3. (each under 12 words)."
         if include_fu else ""
     )
     return _SYSTEM_PROMPT + lang_note + fu_note
@@ -116,10 +116,10 @@ def _build_qa_prompt(
         if language != "English" else ""
     )
     # FU in user prompt reinforces system prompt instruction
+    _fu_lang = f"in {language} " if language != "English" else ""
     fu_instruction = (
         f"\nAfter your answer, output exactly '---FU---' on its own line, "
-        f"then 3 follow-up questions "
-        f"{f'in {language} ' if language != \"English\" else ''}"
+        f"then 3 follow-up questions {_fu_lang}"
         "numbered 1. 2. 3. (max 12 words each)."
         if include_fu else ""
     )
