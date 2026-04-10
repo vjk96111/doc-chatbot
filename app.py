@@ -37,14 +37,101 @@ def _load_embed_model():
 # CSS (dark/light)
 def _get_css(dark: bool) -> str:
     bg      = "#1e1e2e" if dark else "#ffffff"
+    sb_bg   = "#16162a" if dark else "#f1f3f5"
     card_bg = "#2a2a3d" if dark else "#f8f9fa"
     card_bd = "#3d3d5c" if dark else "#dee2e6"
     text    = "#e0e0f0" if dark else "#212529"
     cap     = "#a0a0c0" if dark else "#6c757d"
+    inp_bg  = "#24243a" if dark else "#ffffff"
+    code_fg = "#a8d8ff" if dark else "#d63384"
+    hl_bg   = "#3a3a1a" if dark else "#fffde7"
     return f"""
     <style>
-    .stApp {{ background-color: {bg}; color: {text}; }}
-    .block-container {{ padding-top: 1.8rem; }}
+    /* ── Main app background ── */
+    .stApp, [data-testid="stAppViewContainer"] {{
+        background-color: {bg} !important;
+        color: {text} !important;
+    }}
+    .main .block-container {{
+        background-color: {bg} !important;
+        padding-top: 1.8rem;
+    }}
+    /* ── Sidebar ── */
+    [data-testid="stSidebar"] > div:first-child {{
+        background-color: {sb_bg} !important;
+    }}
+    [data-testid="stSidebar"] p,
+    [data-testid="stSidebar"] span,
+    [data-testid="stSidebar"] label,
+    [data-testid="stSidebar"] small,
+    [data-testid="stSidebar"] div {{
+        color: {text} !important;
+    }}
+    /* ── Chat messages ── */
+    [data-testid="stChatMessage"] {{
+        background-color: {card_bg} !important;
+        border: 1px solid {card_bd} !important;
+        border-radius: 10px !important;
+        margin: 2px 0 !important;
+    }}
+    [data-testid="stChatMessage"] p,
+    [data-testid="stChatMessage"] li,
+    [data-testid="stChatMessage"] span,
+    [data-testid="stChatMessage"] td,
+    [data-testid="stChatMessage"] th {{
+        color: {text} !important;
+    }}
+    /* ── Chat input ── */
+    [data-testid="stChatInput"] textarea {{
+        background-color: {inp_bg} !important;
+        color: {text} !important;
+    }}
+    [data-testid="stBottom"] > div {{
+        background-color: {bg} !important;
+    }}
+    /* ── Text / Password inputs ── */
+    .stTextInput > div > div > input,
+    .stTextArea > div > div > textarea {{
+        background-color: {inp_bg} !important;
+        color: {text} !important;
+        border-color: {card_bd} !important;
+    }}
+    /* ── Expanders ── */
+    [data-testid="stExpander"] details {{
+        background-color: {card_bg} !important;
+        border: 1px solid {card_bd} !important;
+        border-radius: 8px;
+    }}
+    [data-testid="stExpander"] summary,
+    [data-testid="stExpander"] details > div {{
+        background-color: {card_bg} !important;
+        color: {text} !important;
+    }}
+    /* ── Selectbox / Radio ── */
+    [data-testid="stSelectbox"] > div,
+    [data-testid="stRadio"] label {{
+        color: {text} !important;
+    }}
+    /* ── General markdown text ── */
+    [data-testid="stMarkdownContainer"] p,
+    [data-testid="stMarkdownContainer"] li,
+    [data-testid="stMarkdownContainer"] span {{
+        color: {text};
+    }}
+    /* ── Headings ── */
+    h1, h2, h3, h4 {{ color: {text}; }}
+    /* ── Captions ── */
+    .stCaption, [data-testid="stCaptionContainer"] p {{
+        color: {cap} !important;
+    }}
+    /* ── Code ── */
+    code {{
+        background-color: {card_bg} !important;
+        color: {code_fg} !important;
+    }}
+    /* ── Dividers ── */
+    hr {{ border-color: {card_bd}; }}
+    /* ── Custom cards ── */
     .welcome-card {{
         background: linear-gradient(135deg,#1a73e8 0%,#0d47a1 100%);
         color:white;padding:2.5rem 2rem;border-radius:14px;
@@ -59,7 +146,7 @@ def _get_css(dark: bool) -> str:
     }}
     .feature-card h3{{margin-bottom:0.4rem;}}
     .highlight-box {{
-        background:{"#3a3a1a" if dark else "#fffde7"};
+        background:{hl_bg};
         border-left:4px solid #f9a825;padding:0.6rem 1rem;
         border-radius:0 8px 8px 0;font-style:italic;
         margin:0.5rem 0;color:{text};
@@ -72,7 +159,6 @@ def _get_css(dark: bool) -> str:
         width:100%;white-space:normal;height:auto;
         padding:0.45rem 0.6rem;font-size:0.85rem;
     }}
-    .stCaption{{color:{cap};}}
     </style>
     """
 
@@ -225,8 +311,37 @@ def _doc_stats(doc_name: str) -> Dict:
     return {"word_count": len(words), "top_keywords": top}
 
 
+# ── Follow-up / vague query detection ───────────────────────────────────────
+_VAGUE_PATTERNS = [
+    "give me", "give a", "long answer", "longer", "more detail", "detailed",
+    "elaborate", "explain more", "go deeper", "expand", "tell me more",
+    "more info", "in detail", "more about", "more on", "describe more",
+    "describe in", "explain in",
+]
+
+def _resolve_search_query(question: str) -> str:
+    """If question is a vague follow-up instruction, return the last substantive question."""
+    q_lower = question.lower().strip()
+    if len(q_lower) < 70 and any(p in q_lower for p in _VAGUE_PATTERNS):
+        prior = [m["content"] for m in st.session_state.messages if m["role"] == "user"]
+        if prior:
+            return prior[-1]   # last real question (before current one is appended)
+    return question
+
+
 # CORE ACTIONS
-def _handle_question(question: str) -> None:
+def _handle_question(question: str, model_override: str = None) -> None:
+    # Capture chat history BEFORE appending current question
+    recent_history = [
+        {"role": m["role"], "content": m["content"][:600]}
+        for m in st.session_state.messages[-4:]   # up to last 2 Q+A exchanges
+    ]
+
+    # If the user typed a vague follow-up, use the last real question for retrieval
+    search_query = _resolve_search_query(question)
+    # Use model_override (e.g. for Re-ask with 70b) or the user's selected model
+    model_to_use = model_override or st.session_state.model
+
     with st.chat_message("user"):
         st.markdown(question)
     st.session_state.messages.append(
@@ -239,10 +354,10 @@ def _handle_question(question: str) -> None:
             t0 = time.time()
             mode = st.session_state.search_mode
             if mode == "Keyword":
-                chunks = keyword_search(question, st.session_state.vector_store.chunks, top_k=3)
+                chunks = keyword_search(search_query, st.session_state.vector_store.chunks, top_k=3)
             elif mode == "Hybrid":
-                sem = st.session_state.vector_store.search(question, st.session_state.api_key, top_k=3)
-                kw  = keyword_search(question, st.session_state.vector_store.chunks, top_k=3)
+                sem = st.session_state.vector_store.search(search_query, st.session_state.api_key, top_k=3)
+                kw  = keyword_search(search_query, st.session_state.vector_store.chunks, top_k=3)
                 seen_texts = set()
                 chunks = []
                 for c in sem + kw:
@@ -251,18 +366,19 @@ def _handle_question(question: str) -> None:
                         chunks.append(c)
                 chunks = chunks[:4]
             else:
-                chunks = st.session_state.vector_store.search(question, st.session_state.api_key, top_k=3)
+                chunks = st.session_state.vector_store.search(search_query, st.session_state.api_key, top_k=3)
             t_search = time.time() - t0
 
         # Answer — follow-up questions come back in the same call, no extra delay
         with st.spinner("💬 Generating answer…"):
             t1 = time.time()
-            answer, follow_ups = get_answer(
+            answer, follow_ups, actual_model = get_answer(
                 question, chunks,
                 st.session_state.api_key,
-                st.session_state.model,
+                model_to_use,
                 st.session_state.language,
                 include_followups=True,
+                chat_history=recent_history if recent_history else None,
             )
             t_llm = time.time() - t1
 
@@ -274,19 +390,29 @@ def _handle_question(question: str) -> None:
         # Highlight
         if st.session_state.highlight_on and chunks:
             with st.spinner("🔎 Finding key sentence…"):
-                highlight = get_highlight(question, chunks, st.session_state.api_key, st.session_state.model)
+                highlight = get_highlight(question, chunks, st.session_state.api_key, model_to_use)
             if highlight:
                 st.markdown(
                     f'<div class="highlight-box">📌 <b>Key excerpt:</b> {highlight}</div>',
                     unsafe_allow_html=True,
                 )
 
-        # Timing
+        # Timing — show ACTUAL model used, warn on fallback
+        _fallback_note = (
+            f"  *(fell back from `{model_to_use}`)*"
+            if actual_model != model_to_use and actual_model != "none"
+            else ""
+        )
         st.caption(
             f"⏱ Search: {t_search:.1f}s · Answer: {t_llm:.1f}s · "
-            f"Total: {t_search+t_llm:.1f}s · Model: `{st.session_state.model}` · "
+            f"Total: {t_search+t_llm:.1f}s · Model: `{actual_model}`{_fallback_note} · "
             f"Lang: {st.session_state.language}"
         )
+        if actual_model != model_to_use and actual_model != "none":
+            st.warning(
+                f"⚠️ `{model_to_use}` was busy or unavailable; "
+                f"answered with `{actual_model}` instead."
+            )
 
         # Images
         images = _collect_images_for_chunks(chunks)
@@ -390,9 +516,11 @@ with st.sidebar:
             "📌 Show key excerpt", value=st.session_state.highlight_on
         )
 
+        _sm_opts = ["Semantic", "Keyword", "Hybrid"]
         st.session_state.search_mode = st.radio(
             "🔍 Search mode",
-            options=["Semantic", "Keyword", "Hybrid"],
+            options=_sm_opts,
+            index=_sm_opts.index(st.session_state.get("search_mode", "Semantic")),
             horizontal=True,
             help="Semantic=AI similarity · Keyword=exact words · Hybrid=both",
         )
@@ -416,10 +544,11 @@ with st.sidebar:
             else:
                 st.info("👉 [Get free Groq key →](https://console.groq.com)")
 
+        _model_opts = ["llama-3.1-8b-instant", "llama-3.3-70b-versatile"]
         st.session_state.model = st.selectbox(
             "Model",
-            options=["llama-3.1-8b-instant", "llama-3.3-70b-versatile"],
-            index=0,
+            options=_model_opts,
+            index=_model_opts.index(st.session_state.get("model", _model_opts[0])),
             help="8b instant = fastest ⚡  |  70b = best quality",
         )
 
@@ -551,13 +680,41 @@ if not st.session_state.documents and not st.session_state.messages:
     st.info("👈  **Get started:** upload a document in the sidebar.")
     st.stop()
 
-for msg in st.session_state.messages:
+for _i, msg in enumerate(st.session_state.messages):
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
         if msg.get("images"):
             _show_images(msg["images"], expanded=False)
         if msg.get("sources"):
             _show_sources(msg["sources"])
+        # ── Persistent feedback / bookmark / retry buttons for assistant msgs ──
+        if msg["role"] == "assistant":
+            _msg_q = (
+                st.session_state.messages[_i - 1]["content"]
+                if _i > 0 and st.session_state.messages[_i - 1]["role"] == "user"
+                else ""
+            )
+            _existing_fb = st.session_state.feedback.get(_i)
+            _fb1, _fb2, _bm_col, _retry_col = st.columns([1, 1, 2, 2])
+            if _existing_fb:
+                _fb1.caption(f"{'👍' if _existing_fb == 'up' else '👎'} Rated")
+            else:
+                if _fb1.button("👍", key=f"up_{_i}", help="Good answer"):
+                    st.session_state.feedback[_i] = "up"
+                    st.rerun()
+                if _fb2.button("👎", key=f"dn_{_i}", help="Poor answer"):
+                    st.session_state.feedback[_i] = "down"
+                    st.rerun()
+            if _bm_col.button("🔖 Bookmark", key=f"bm_{_i}"):
+                st.session_state.bookmarks.append({
+                    "q":  _msg_q,
+                    "a":  msg["content"][:300] + ("…" if len(msg["content"]) > 300 else ""),
+                    "ts": time.strftime("%H:%M"),
+                })
+                st.toast("Bookmarked! ✅")
+            if _msg_q and _retry_col.button("🔄 Re-ask with 70b", key=f"retry_{_i}"):
+                st.session_state["_retry_q"] = _msg_q
+                st.rerun()
 
 _summarize_doc: Optional[str] = st.session_state.pop("_summarize_doc", None)
 if _summarize_doc:
@@ -565,10 +722,7 @@ if _summarize_doc:
 
 _retry_q: Optional[str] = st.session_state.pop("_retry_q", None)
 if _retry_q:
-    orig_model = st.session_state.model
-    st.session_state.model = "llama-3.3-70b-versatile"
-    _handle_question(_retry_q)
-    st.session_state.model = orig_model
+    _handle_question(_retry_q, model_override="llama-3.3-70b-versatile")
 
 _pending_q: Optional[str] = st.session_state.pop("_pending_q", None)
 
@@ -598,11 +752,11 @@ if _pending_q:
 
 # ── Follow-up questions (rendered in main flow so buttons survive reruns) ─────
 _follow_ups = st.session_state.get("_follow_ups", [])
-if _follow_ups and st.session_state.messages and not _pending_q:
+if _follow_ups and st.session_state.messages:
     st.markdown("**💡 Follow-up questions:**")
     fu_cols = st.columns(len(_follow_ups))
-    for _i, (_fc, _fq) in enumerate(zip(fu_cols, _follow_ups)):
-        if _fc.button(_fq, key=f"fu_main_{_i}_{_fq[:15]}", use_container_width=True):
+    for _fi, (_fc, _fq) in enumerate(zip(fu_cols, _follow_ups)):
+        if _fc.button(_fq, key=f"fu_main_{_fi}_{_fq[:15]}", use_container_width=True):
             st.session_state["_pending_q"] = _fq
             st.session_state["_follow_ups"] = []
             st.rerun()
