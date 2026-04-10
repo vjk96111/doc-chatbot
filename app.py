@@ -137,6 +137,7 @@ def _init_state() -> None:
         "bookmarks":     [],
         "feedback":      {},
         "search_mode":   "Semantic",
+        "_follow_ups":   [],   # follow-up questions from last answer
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -265,6 +266,9 @@ def _handle_question(question: str) -> None:
             )
             t_llm = time.time() - t1
 
+        # Persist follow-ups in session state so they survive reruns
+        st.session_state["_follow_ups"] = follow_ups
+
         st.markdown(answer)
 
         # Highlight
@@ -317,14 +321,8 @@ def _handle_question(question: str) -> None:
             st.session_state["_retry_q"] = question
             st.rerun()
 
-        # Follow-up questions (already generated in the answer call — zero extra delay)
-        if follow_ups:
-            st.markdown("**💡 Follow-up questions:**")
-            fu_cols = st.columns(len(follow_ups))
-            for fc, fq in zip(fu_cols, follow_ups):
-                if fc.button(fq, key=f"fu_{msg_idx}_{fq[:20]}", use_container_width=True):
-                    st.session_state["_pending_q"] = fq
-                    st.rerun()
+        # Follow-up questions are stored in session state and rendered
+        # in the MAIN FLOW below — not here — so they survive reruns correctly.
 
     st.session_state.messages.append({
         "role": "assistant", "content": answer,
@@ -594,7 +592,20 @@ if not st.session_state.messages and not _pending_q and st.session_state.documen
                 st.rerun()
 
 if _pending_q:
+    # Clear follow-ups before answering new question
+    st.session_state["_follow_ups"] = []
     _handle_question(_pending_q)
+
+# ── Follow-up questions (rendered in main flow so buttons survive reruns) ─────
+_follow_ups = st.session_state.get("_follow_ups", [])
+if _follow_ups and st.session_state.messages and not _pending_q:
+    st.markdown("**💡 Follow-up questions:**")
+    fu_cols = st.columns(len(_follow_ups))
+    for _i, (_fc, _fq) in enumerate(zip(fu_cols, _follow_ups)):
+        if _fc.button(_fq, key=f"fu_main_{_i}_{_fq[:15]}", use_container_width=True):
+            st.session_state["_pending_q"] = _fq
+            st.session_state["_follow_ups"] = []
+            st.rerun()
 
 _placeholder = (
     "Ask a question about your documents…"
@@ -604,4 +615,5 @@ _placeholder = (
 _ready = bool(st.session_state.api_key and st.session_state.documents)
 
 if user_input := st.chat_input(_placeholder, disabled=not _ready):
+    st.session_state["_follow_ups"] = []
     _handle_question(user_input)
