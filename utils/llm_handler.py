@@ -15,8 +15,11 @@ _FALLBACK_MODELS = [
     "llama-3.3-70b-versatile",
 ]
 
-# Safe character limit per prompt (~100k chars ≈ 25k tokens, well within 128k window)
+# Safe character limit per prompt
 _MAX_PROMPT_CHARS = 80_000
+
+# Separator used to split answer from follow-up questions in combined response
+_FU_SEP = "---FU---"
 
 # ─────────────────────────────────── prompts ─────────────────────────────────
 
@@ -32,6 +35,13 @@ _SYSTEM_PROMPT = (
     "do NOT hallucinate facts.\n"
     "- Be concise but complete.\n"
     "- If the user specifies a language, respond entirely in that language."
+)
+
+_SYSTEM_PROMPT_WITH_FU = (
+    _SYSTEM_PROMPT
+    + "\n\nAfter your answer, add a line containing only '---FU---', "
+    "then list exactly 3 short follow-up questions the user might ask next, "
+    "numbered 1. 2. 3. Keep each question under 12 words."
 )
 
 _SUMMARY_PROMPT_TEMPLATE = (
@@ -103,14 +113,9 @@ def _call_with_retry(client: Groq, model_name: str, messages: list, temperature:
                     time.sleep(wait)
                 else:
                     break  # try next model
-            except BadRequestError as exc:
-                # Prompt too long even after truncation — shorten and retry once
-                if attempt == 0:
-                    for msg in messages:
-                        if msg.get("role") == "user" and len(msg["content"]) > 10_000:
-                            msg["content"] = msg["content"][:10_000]
-                else:
-                    return "⚠️ The document content is too large to process. Try uploading a shorter document or asking a more specific question."
+            except BadRequestError:
+                # Model unavailable / deprecated / context error — try next model
+                break
             except Exception as exc:
                 raise exc
 
@@ -120,25 +125,53 @@ def _call_with_retry(client: Groq, model_name: str, messages: list, temperature:
     )
 
 
+def _parse_followups(raw: str) -> tuple:
+    """
+    Split a combined answer+follow-up response on the _FU_SEP separator.
+    Returns (answer_text, [follow_up_1, follow_up_2, follow_up_3]).
+    """
+    if _FU_SEP not in raw:
+        return raw.strip(), []
+    parts = raw.split(_FU_SEP, 1)
+    answer = parts[0].strip()
+    follow_ups: List[str] = []
+    for line in parts[1].strip().splitlines():
+        line = line.strip()
+        if line and line[0].isdigit():
+            text = line.split(".", 1)[-1].strip().lstrip(")").strip()
+            if text:
+                follow_ups.append(text)
+    return answer, follow_ups[:3]
+
+
 def get_answer(
     question: str,
     chunks: List[Dict],
     api_key: str,
     model_name: str = "llama-3.1-8b-instant",
     language: str = "English",
-) -> str:
+    include_followups: bool = True,
+) -> tuple:
+    """
+    Returns (answer_text, follow_up_questions_list).
+    Follow-up questions are embedded in the same LLM call — no extra API request.
+    """
     client = _groq_client(api_key)
     prompt = _build_qa_prompt(question, chunks, language)
-    return _call_with_retry(
+    system = _SYSTEM_PROMPT_WITH_FU if include_followups else _SYSTEM_PROMPT
+    raw = _call_with_retry(
         client,
         model_name,
         messages=[
-            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "system", "content": system},
             {"role": "user", "content": prompt},
         ],
         temperature=0.2,
         max_tokens=2048,
     )
+    if include_followups:
+        return _parse_followups(raw)
+    return raw.strip(), []
 
 
 def get_document_summary(
@@ -178,25 +211,24 @@ def get_follow_up_questions(
     model_name: str = "llama-3.1-8b-instant",
     language: str = "English",
 ) -> List[str]:
-    """Generate 3 follow-up questions based on the Q&A exchange."""
+    """Standalone follow-up generator (kept for backward compat; prefer include_followups=True in get_answer)."""
     lang_note = f" Write them in {language}." if language != "English" else ""
     prompt = (
-        f"Based on this Q&A exchange, suggest exactly 3 short follow-up questions "
-        f"a user might ask next about the document.{lang_note}\n\n"
-        f"Q: {question}\nA: {answer[:1000]}\n\n"
-        "Return ONLY a numbered list like:\n1. ...\n2. ...\n3. ..."
+        f"Suggest exactly 3 short follow-up questions a user might ask next "
+        f"about the document, based on this Q&A.{lang_note}\n"
+        f"Q: {question}\nA: {answer[:500]}\n\n"
+        "Return ONLY a numbered list: 1. ...\n2. ...\n3. ..."
     )
     client = _groq_client(api_key)
     raw = _call_with_retry(
         client, model_name,
         messages=[{"role": "user", "content": prompt}],
-        temperature=0.7, max_tokens=200,
+        temperature=0.7, max_tokens=150,
     )
     questions: List[str] = []
     for line in raw.splitlines():
         line = line.strip()
         if line and line[0].isdigit():
-            # Strip leading "1. " etc.
             text = line.split(".", 1)[-1].strip().lstrip(")").strip()
             if text:
                 questions.append(text)
