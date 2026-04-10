@@ -9,10 +9,12 @@ from typing import List, Dict
 
 from groq import Groq, RateLimitError, BadRequestError
 
-# Fallback model order — all have large context windows (128k+)
+# Fallback model order — fast 8b is always the last-resort safety net
 _FALLBACK_MODELS = [
-    "llama-3.1-8b-instant",
-    "llama-3.3-70b-versatile",
+    "meta-llama/llama-4-scout-17b-16e-instruct",  # Llama 4 — fast + smart
+    "openai/gpt-oss-20b",                          # GPT-OSS 20B — very fast
+    "llama-3.3-70b-versatile",                     # reliable 70b
+    "llama-3.1-8b-instant",                        # last resort: always works
 ]
 
 # Safe character limit per prompt
