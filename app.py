@@ -435,6 +435,25 @@ def _get_css(dark: bool) -> str:
             font-size: 0.8rem !important;
         }}
 
+        /* Tables: scroll horizontally instead of overflowing viewport */
+        [data-testid="stChatMessage"] table,
+        [data-testid="stMarkdownContainer"] table,
+        .stMarkdown table,
+        .element-container table {{
+            display: block !important;
+            overflow-x: auto !important;
+            max-width: 100% !important;
+            -webkit-overflow-scrolling: touch !important;
+            font-size: 0.8rem !important;
+        }}
+        [data-testid="stChatMessage"] th,
+        [data-testid="stChatMessage"] td,
+        [data-testid="stMarkdownContainer"] th,
+        [data-testid="stMarkdownContainer"] td {{
+            white-space: nowrap !important;
+            padding: 0.3rem 0.5rem !important;
+        }}
+
         /* Images fill width */
         [data-testid="stImage"] img {{
             max-width: 100% !important;
@@ -639,6 +658,26 @@ def _resolve_search_query(question: str) -> str:
     return question
 
 
+# Patterns that indicate the user wants a comprehensive view of the whole document
+_COMPREHENSIVE_PATTERNS = [
+    "list all", "list every", "all contents", "all sections", "all topics",
+    "all chapters", "all heading", "table of contents", "toc",
+    "what does this document", "what is in this document", "what is in the document",
+    "what does the document contain", "what does the document cover",
+    "entire document", "full document", "whole document",
+    "full list", "complete list", "full overview", "complete overview",
+    "everything in", "everything covered", "all parts",
+    "overview of the document", "overview of this document",
+    "what topics", "what subjects", "what areas", "what chapters",
+    "all the sections", "all the topics",
+]
+
+def _is_comprehensive_query(question: str) -> bool:
+    """Return True if the question asks for a full/complete view of the document."""
+    q = question.lower().strip()
+    return any(p in q for p in _COMPREHENSIVE_PATTERNS)
+
+
 # CORE ACTIONS
 def _handle_question(question: str, model_override: str = None, answer_style: str = None) -> None:
     # Only pass recent history if the language hasn't changed since those messages
@@ -668,20 +707,27 @@ def _handle_question(question: str, model_override: str = None, answer_style: st
         with st.spinner("🔍 Searching your documents…"):
             t0 = time.time()
             mode = st.session_state.search_mode
-            if mode == "Keyword":
-                chunks = keyword_search(search_query, st.session_state.vector_store.chunks, top_k=3)
+            all_chunks = st.session_state.vector_store.chunks
+
+            # For "list all / overview / table of contents" queries, return every
+            # chunk in document order so the LLM sees the full content (prompt is
+            # capped at 80 k chars so there's no token blowout).
+            if _is_comprehensive_query(search_query):
+                chunks = list(all_chunks)  # all chunks, preserve insertion order
+            elif mode == "Keyword":
+                chunks = keyword_search(search_query, all_chunks, top_k=5)
             elif mode == "Hybrid":
-                sem = st.session_state.vector_store.search(search_query, st.session_state.api_key, top_k=3)
-                kw  = keyword_search(search_query, st.session_state.vector_store.chunks, top_k=3)
+                sem = st.session_state.vector_store.search(search_query, st.session_state.api_key, top_k=5)
+                kw  = keyword_search(search_query, all_chunks, top_k=5)
                 seen_texts = set()
                 chunks = []
                 for c in sem + kw:
                     if c["text"] not in seen_texts:
                         seen_texts.add(c["text"])
                         chunks.append(c)
-                chunks = chunks[:4]
+                chunks = chunks[:6]
             else:
-                chunks = st.session_state.vector_store.search(search_query, st.session_state.api_key, top_k=3)
+                chunks = st.session_state.vector_store.search(search_query, st.session_state.api_key, top_k=5)
             t_search = time.time() - t0
 
         # Answer — follow-up questions come back in the same call, no extra delay
@@ -695,6 +741,7 @@ def _handle_question(question: str, model_override: str = None, answer_style: st
                 include_followups=True,
                 chat_history=recent_history if recent_history else None,
                 answer_style=_style,
+                comprehensive=_is_comprehensive_query(search_query),
             )
             t_llm = time.time() - t1
 
