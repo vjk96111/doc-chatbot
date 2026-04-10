@@ -92,6 +92,7 @@ def _build_qa_prompt(
     style: str = "Normal",
     include_fu: bool = False,
     comprehensive: bool = False,
+    list_all: bool = False,
 ) -> str:
     if not chunks:
         return (
@@ -130,12 +131,19 @@ def _build_qa_prompt(
         "Organise the output as a structured numbered or bulleted list with brief descriptions."
         if comprehensive else ""
     )
+    list_all_instruction = (
+        "\nINSTRUCTION: The context above contains ALL document chunks that mention "
+        "the requested items. Extract and enumerate EVERY individual item name you find "
+        "across ALL context blocks \u2014 do not summarise, do not skip any. "
+        "Produce a complete numbered or bulleted list."
+        if list_all else ""
+    )
     prompt = (
         f"{lang_instruction}"
         f"RETRIEVED CONTEXT FROM DOCUMENTS:\n{context}\n\n"
         f"USER QUESTION: {question}\n\n"
         f"Answer the question based on the context above and cite sources."
-        f"{comprehensive_instruction}{style_instruction}{fu_instruction}"
+        f"{comprehensive_instruction}{list_all_instruction}{style_instruction}{fu_instruction}"
     )
     return prompt[:_MAX_PROMPT_CHARS]
 
@@ -223,6 +231,7 @@ def get_answer(
     chat_history: List[Dict] = None,
     answer_style: str = "Normal",
     comprehensive: bool = False,
+    list_all: bool = False,
 ) -> tuple:
     """
     Returns (answer_text, follow_up_questions_list, actual_model_used).
@@ -235,6 +244,7 @@ def get_answer(
         question, chunks, language,
         style=answer_style, include_fu=include_followups,
         comprehensive=comprehensive,
+        list_all=list_all,
     )
     # Dynamic system prompt carries language + FU instructions baked in
     system = _make_system_prompt(language=language, include_fu=include_followups)
