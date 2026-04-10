@@ -689,6 +689,54 @@ def _is_list_all_query(question: str) -> bool:
     q = question.lower().strip()
     return any(p in q for p in _LIST_ALL_PATTERNS)
 
+# Stopwords to strip when extracting the target noun from "list all X" queries
+_LIST_ALL_STOPWORDS = {
+    "list", "all", "every", "show", "give", "me", "the",
+    "complete", "full", "a", "an", "of", "in", "from",
+    "document", "this", "that", "these", "those",
+}
+
+def _extract_list_target(question: str) -> str:
+    """
+    Extract the target noun from a 'list all X' query.
+    e.g. 'list all 166 measures' -> 'measures'
+         'show all DAX tables'   -> 'dax tables'
+         'full list of columns'  -> 'columns'
+    Returns empty string if nothing useful found.
+    """
+    import re
+    q = question.lower().strip()
+    # Remove leading pattern words and numbers, keep the noun phrase
+    words = re.sub(r'\d+', '', q).split()
+    meaningful = [w for w in words if w not in _LIST_ALL_STOPWORDS and len(w) > 2]
+    return " ".join(meaningful[-3:]) if meaningful else ""   # last 1-3 content words
+
+def _scan_all_chunks_for(noun: str, all_chunks: list) -> list:
+    """
+    Return ALL chunks that contain any word from *noun*.
+    Ordered: chunks whose section/source name contains the noun first,
+    then other containing chunks — so the most relevant pages come first.
+    Prompt cap in llm_handler (80k chars) prevents token blowout.
+    """
+    if not noun:
+        return all_chunks
+    words = [w for w in noun.split() if len(w) > 2]
+    if not words:
+        return all_chunks
+
+    primary, secondary = [], []
+    for c in all_chunks:
+        text_lower = c["text"].lower()
+        source_lower = c.get("source", "").lower()
+        in_source = any(w in source_lower for w in words)
+        in_text   = any(w in text_lower   for w in words)
+        if in_source:
+            primary.append(c)
+        elif in_text:
+            secondary.append(c)
+
+    return primary + secondary
+
 def _is_comprehensive_query(question: str) -> bool:
     """Return True if the question is a TOC or targeted full-list query."""
     return _is_toc_query(question) or _is_list_all_query(question)
@@ -746,15 +794,10 @@ def _handle_question(question: str, model_override: str = None, answer_style: st
                 # Document structure / TOC: send ONLY section titles (tiny prompt → fast)
                 chunks = _build_toc_chunks(all_chunks)
             elif _is_list_all_query(search_query):
-                # "list all X": targeted search for that specific item, higher top_k
-                sem = st.session_state.vector_store.search(search_query, st.session_state.api_key, top_k=12)
-                kw  = keyword_search(search_query, all_chunks, top_k=8)
-                seen_texts: set = set()
-                chunks = []
-                for c in sem + kw:
-                    if c["text"] not in seen_texts:
-                        seen_texts.add(c["text"])
-                        chunks.append(c)
+                # "list all X": scan EVERY chunk that mentions the target noun
+                # so that enumerated data (e.g. measures on pages 59-70) is never missed
+                target = _extract_list_target(search_query)
+                chunks = _scan_all_chunks_for(target, all_chunks)
             elif mode == "Keyword":
                 chunks = keyword_search(search_query, all_chunks, top_k=5)
             elif mode == "Hybrid":
@@ -784,6 +827,7 @@ def _handle_question(question: str, model_override: str = None, answer_style: st
                 answer_style=_style,
                 # comprehensive=True ONLY for TOC queries — not for "list all X" queries
                 comprehensive=_is_toc_query(search_query),
+                list_all=_is_list_all_query(search_query),
             )
             t_llm = time.time() - t1
 
