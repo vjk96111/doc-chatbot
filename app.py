@@ -70,18 +70,24 @@ st.markdown(
 # ══════════════════════════════════ SESSION STATE ════════════════════════════
 
 def _init_state() -> None:
+    # Auto-load API key from Streamlit Secrets (set in Streamlit Cloud dashboard)
+    secret_key = st.secrets.get("GROQ_API_KEY", "") if hasattr(st, "secrets") else ""
+
     defaults: Dict = {
         "vector_store": VectorStore(),
         "messages": [],       # [{"role", "content", "images", "sources"}]
         "documents": {},      # {filename: {"chunks": n, "images": n, "pages": n}}
         "doc_images": {},     # {filename: {page_num: [img_dict, ...]}}
         "doc_full_text": {},  # {filename: combined text string}
-        "api_key": "",
+        "api_key": secret_key,
         "model": "llama-3.3-70b-versatile",
     }
     for key, val in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = val
+    # Always refresh from secrets in case session was reset
+    if secret_key and not st.session_state.get("api_key"):
+        st.session_state["api_key"] = secret_key
 
 
 _init_state()
@@ -254,19 +260,32 @@ with st.sidebar:
     st.divider()
 
     # ── API / model settings ──────────────────────────────────────────────────
+    _key_from_secrets = bool(st.secrets.get("GROQ_API_KEY", "")) if hasattr(st, "secrets") else False
+
     with st.expander(
         "🔑 API Settings",
         expanded=not bool(st.session_state.api_key),
     ):
-        new_key = st.text_input(
-            "Groq API Key",
-            type="password",
-            value=st.session_state.api_key,
-            placeholder="gsk_…",
-            help="Get a free key at https://console.groq.com",
-        )
-        if new_key != st.session_state.api_key:
-            st.session_state.api_key = new_key
+        if _key_from_secrets:
+            # Key is loaded server-side — never expose it in the UI
+            st.success("✅ API key configured (server-side)")
+        else:
+            new_key = st.text_input(
+                "Groq API Key",
+                type="password",
+                value=st.session_state.api_key,
+                placeholder="gsk_…",
+                help="Get a free key at https://console.groq.com",
+            )
+            if new_key != st.session_state.api_key:
+                st.session_state.api_key = new_key
+
+            if st.session_state.api_key:
+                st.success("✅ API key configured")
+            else:
+                st.info(
+                    "👉 [Get free Groq key →](https://console.groq.com)"
+                )
 
         st.session_state.model = st.selectbox(
             "Model",
@@ -279,13 +298,6 @@ with st.sidebar:
             index=0,
             help="70b = best quality  |  8b instant = fastest",
         )
-
-        if st.session_state.api_key:
-            st.success("✅ API key configured")
-        else:
-            st.info(
-                "👉 [Get free Groq key →](https://console.groq.com)"
-            )
 
     st.divider()
 
