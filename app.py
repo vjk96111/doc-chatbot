@@ -25,7 +25,7 @@ st.set_page_config(
     page_title="DocChat - AI Document Assistant",
     page_icon="📄",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="auto",   # collapses on mobile, expanded on desktop
 )
 
 # Embedding model cached across all sessions
@@ -217,6 +217,84 @@ def _get_css(dark: bool) -> str:
         background-color: {card_bg} !important;
         color: {text} !important;
     }}
+    /* ── Top toolbar / header bar ── */
+    header[data-testid="stHeader"],
+    [data-testid="stHeader"] {{
+        background-color: {bg} !important;
+        border-bottom: 1px solid {card_bd} !important;
+    }}
+    header[data-testid="stHeader"] *,
+    [data-testid="stHeader"] a,
+    [data-testid="stHeader"] button,
+    [data-testid="stHeader"] svg {{
+        color: {text} !important;
+        fill: {text} !important;
+    }}
+    /* ── Deploy/Fork/toolbar buttons ── */
+    [data-testid="stToolbar"],
+    [data-testid="stDecoration"],
+    [data-testid="stDeployButton"] {{
+        background-color: {bg} !important;
+    }}
+    [data-testid="stDeployButton"] button {{
+        background-color: {card_bg} !important;
+        color: {text} !important;
+        border-color: {card_bd} !important;
+    }}
+    /* Hide the deploy bar in production if desired; keep visible but themed */
+    .reportview-container .main footer {{ visibility: hidden; }}
+    /* ── File uploader ── */
+    [data-testid="stFileUploader"] section,
+    [data-testid="stFileUploader"] > div {{
+        background-color: {inp_bg} !important;
+        border: 1.5px dashed {card_bd} !important;
+        border-radius: 8px !important;
+    }}
+    [data-testid="stFileUploader"] span,
+    [data-testid="stFileUploader"] small,
+    [data-testid="stFileUploader"] p {{
+        color: {cap} !important;
+    }}
+    [data-testid="stFileUploader"] button {{
+        background-color: {card_bg} !important;
+        color: {text} !important;
+        border-color: {card_bd} !important;
+    }}
+    /* Uploaded file chip inside uploader */
+    [data-testid="stFileUploaderFile"],
+    [data-testid="stFileUploaderFileData"] {{
+        background-color: {card_bg} !important;
+        color: {text} !important;
+        border-color: {card_bd} !important;
+    }}
+    /* ── stStatus / st.status widget (processing) ── */
+    [data-testid="stStatusContainer"],
+    [data-testid="stStatusContainer"] > div {{
+        background-color: {card_bg} !important;
+        border-color: {card_bd} !important;
+        color: {text} !important;
+    }}
+    /* ── Toast notifications ── */
+    [data-testid="stToast"] {{
+        background-color: {card_bg} !important;
+        color: {text} !important;
+        border: 1px solid {card_bd} !important;
+    }}
+    /* ── Download button ── */
+    [data-testid="stDownloadButton"] button {{
+        background-color: {btn_bg} !important;
+        color: {text} !important;
+        border-color: {btn_bd} !important;
+    }}
+    /* ── Metric widget ── */
+    [data-testid="stMetric"] {{
+        background-color: {card_bg} !important;
+        border-color: {card_bd} !important;
+    }}
+    [data-testid="stMetricValue"],
+    [data-testid="stMetricLabel"] {{
+        color: {text} !important;
+    }}
     /* ── Scrollbar ── */
     ::-webkit-scrollbar-track {{ background: {bg}; }}
     ::-webkit-scrollbar-thumb {{ background: {card_bd}; border-radius: 4px; }}
@@ -250,152 +328,138 @@ def _get_css(dark: bool) -> str:
     }}
 
     /* ══════════════════════════════════════════════════════
-       MOBILE RESPONSIVE  (≤ 768 px)
+       MOBILE  (≤ 768 px)
+       Streamlit auto-collapses the sidebar — initial_sidebar_state="auto"
+       These rules handle everything inside the main content area.
        ══════════════════════════════════════════════════════ */
     @media only screen and (max-width: 768px) {{
 
-        /* ── Reduce main padding so content fills the screen ── */
+        /* Main content: use full viewport, leave room for fixed chat input */
         .main .block-container {{
-            padding: 0.6rem 0.8rem 5rem 0.8rem !important;
+            padding: 0.5rem 0.7rem 5.5rem 0.7rem !important;
             max-width: 100% !important;
+            min-width: 0 !important;
         }}
 
-        /* ── Sidebar: auto-close; overlay style when open ── */
+        /* Sidebar overlay: full-height, 85% width when open */
         [data-testid="stSidebar"] {{
-            min-width: 80vw !important;
-            max-width: 88vw !important;
+            min-width: 85vw !important;
+            max-width: 92vw !important;
         }}
 
-        /* ── Headings scale down ── */
-        h1 {{ font-size: 1.4rem !important; }}
-        h2 {{ font-size: 1.2rem !important; }}
-        h3 {{ font-size: 1.05rem !important; }}
+        /* Typography: scale down */
+        h1 {{ font-size: 1.35rem !important; }}
+        h2 {{ font-size: 1.15rem !important; }}
+        h3 {{ font-size: 1.0rem  !important; }}
+        p, li {{ line-height: 1.55 !important; }}
 
-        /* ── Welcome card ── */
+        /* Welcome / feature cards */
         .welcome-card {{
-            padding: 1.4rem 1rem !important;
+            padding: 1.2rem 0.9rem !important;
+            border-radius: 10px !important;
         }}
-        .welcome-card h2 {{ font-size: 1.4rem !important; }}
-        .welcome-card p  {{ font-size: 0.95rem !important; }}
+        .welcome-card h2 {{ font-size: 1.35rem !important; }}
+        .welcome-card p  {{ font-size: 0.9rem  !important; }}
+        .feature-card {{ height: auto !important; margin-bottom: 0.4rem; }}
 
-        /* ── Feature cards: stack vertically on mobile ── */
-        [data-testid="stHorizontalBlock"]:has(.feature-card) {{
-            flex-direction: column !important;
+        /* Horizontal blocks: wrap to 2-per-row on tablet/large phone */
+        [data-testid="stHorizontalBlock"] {{
+            flex-wrap: wrap !important;
+            gap: 0.35rem !important;
         }}
-        .feature-card {{
-            height: auto !important;
-            margin-bottom: 0.5rem;
+        [data-testid="column"] {{
+            min-width: calc(50% - 0.35rem) !important;
+            flex-grow: 1 !important;
+            box-sizing: border-box !important;
         }}
 
-        /* ── Chat messages: reduce padding / font ── */
+        /* Chat messages: compact */
         [data-testid="stChatMessage"] {{
-            padding: 0.6rem 0.8rem !important;
+            padding: 0.5rem 0.65rem !important;
+            margin-bottom: 0.35rem !important;
         }}
         [data-testid="stChatMessage"] p,
         [data-testid="stChatMessage"] li {{
-            font-size: 0.93rem !important;
+            font-size: 0.9rem !important;
             line-height: 1.5 !important;
         }}
 
-        /* ── Chat avatar: shrink ── */
-        [data-testid="stChatMessage"] [data-testid="chatAvatarIcon-user"],
-        [data-testid="stChatMessage"] [data-testid="chatAvatarIcon-assistant"] {{
-            width: 1.8rem !important;
-            height: 1.8rem !important;
-            font-size: 0.85rem !important;
-        }}
-
-        /* ── Chat input: full width, bigger touch target ── */
+        /* Chat input: bigger touch target, no horizontal overflow */
         [data-testid="stChatInput"] textarea {{
             font-size: 1rem !important;
-            min-height: 48px !important;
+            min-height: 46px !important;
         }}
         [data-testid="stBottom"] {{
-            padding: 0.4rem 0.5rem !important;
+            padding: 0.3rem 0.5rem !important;
+        }}
+        [data-testid="stBottom"] > div {{
+            max-width: 100% !important;
         }}
 
-        /* ── All buttons: minimum touch target 44 px ── */
+        /* All buttons: large touch targets */
         .stButton > button,
         [data-testid^="baseButton"] {{
             min-height: 44px !important;
-            font-size: 0.9rem !important;
-            border-radius: 8px !important;
-        }}
-
-        /* ── Feedback row: reduce column widths ── */
-        div[data-testid="stHorizontalBlock"] button {{
-            padding: 0.5rem 0.3rem !important;
-            font-size: 0.8rem !important;
-        }}
-
-        /* ── Follow-up buttons: stack on narrow screens ── */
-        [data-testid="stHorizontalBlock"]:has([key*="fu_main"]) {{
-            flex-wrap: wrap !important;
-        }}
-
-        /* ── Answer-style buttons bar ── */
-        [data-testid="stHorizontalBlock"]:has([key="btn_style_short"]) {{
-            gap: 0.4rem !important;
-        }}
-
-        /* ── Expanders: full width ── */
-        [data-testid="stExpander"] details {{
-            border-radius: 6px !important;
-        }}
-        [data-testid="stExpander"] summary {{
-            font-size: 0.9rem !important;
-            padding: 0.5rem 0.7rem !important;
-        }}
-
-        /* ── Sources / image expander content ── */
-        [data-testid="stExpander"] details > div {{
-            padding: 0.4rem 0.6rem !important;
-        }}
-
-        /* ── Captions: smaller ── */
-        .stCaption,
-        [data-testid="stCaptionContainer"] p {{
-            font-size: 0.72rem !important;
-        }}
-
-        /* ── Bookmark cards ── */
-        .bookmark-card {{
-            padding: 0.6rem !important;
             font-size: 0.88rem !important;
         }}
-
-        /* ── Sidebar dividers spacing ── */
-        [data-testid="stSidebar"] hr {{
-            margin: 0.5rem 0 !important;
+        div[data-testid="stHorizontalBlock"] button {{
+            font-size: 0.82rem !important;
+            padding: 0.45rem 0.25rem !important;
         }}
 
-        /* ── Code blocks don't overflow ── */
+        /* Expanders */
+        [data-testid="stExpander"] summary {{
+            font-size: 0.88rem !important;
+            padding: 0.45rem 0.65rem !important;
+        }}
+        [data-testid="stExpander"] details > div {{
+            padding: 0.35rem 0.5rem !important;
+        }}
+
+        /* Captions */
+        .stCaption,
+        [data-testid="stCaptionContainer"] p {{
+            font-size: 0.7rem !important;
+        }}
+
+        /* Bookmark cards */
+        .bookmark-card {{
+            padding: 0.55rem !important;
+            font-size: 0.87rem !important;
+        }}
+
+        /* Code: wrap not scroll */
         code, pre {{
             white-space: pre-wrap !important;
             word-break: break-word !important;
-            font-size: 0.82rem !important;
+            font-size: 0.8rem !important;
         }}
 
-        /* ── Images inside chat: fill width ── */
+        /* Images fill width */
         [data-testid="stImage"] img {{
             max-width: 100% !important;
             height: auto !important;
         }}
+
+        /* Sidebar dividers */
+        [data-testid="stSidebar"] hr {{ margin: 0.4rem 0 !important; }}
     }}
 
-    /* ── Very small phones (≤ 420 px): extra compact ── */
-    @media only screen and (max-width: 420px) {{
+    /* Very small phones (≤ 480 px): single-column everything */
+    @media only screen and (max-width: 480px) {{
         .main .block-container {{
-            padding: 0.4rem 0.5rem 5rem 0.5rem !important;
+            padding: 0.35rem 0.45rem 5.5rem 0.45rem !important;
         }}
-        h2 {{ font-size: 1.1rem !important; }}
+        /* Stack ALL columns to full-width */
+        [data-testid="column"] {{
+            min-width: 100% !important;
+            max-width: 100% !important;
+            flex: none !important;
+        }}
+        h2 {{ font-size: 1.05rem !important; }}
         [data-testid="stChatMessage"] p,
         [data-testid="stChatMessage"] li {{
-            font-size: 0.87rem !important;
-        }}
-        .stButton > button,
-        [data-testid^="baseButton"] {{
-            font-size: 0.82rem !important;
+            font-size: 0.85rem !important;
         }}
     }}
     </style>
