@@ -216,10 +216,11 @@ def _init_state() -> None:
         "doc_images":    {},
         "doc_full_text": {},
         "api_key":       secret_key,
-        "model":         "llama-3.1-8b-instant",
+        "model":         "openai/gpt-oss-120b",
         "language":      "English",
         "dark_mode":     False,
         "highlight_on":  False,
+        "answer_style":  "Normal",   # "Short", "Normal", or "Long"
         "bookmarks":     [],
         "feedback":      {},
         "search_mode":   "Semantic",
@@ -330,7 +331,7 @@ def _resolve_search_query(question: str) -> str:
 
 
 # CORE ACTIONS
-def _handle_question(question: str, model_override: str = None) -> None:
+def _handle_question(question: str, model_override: str = None, answer_style: str = None) -> None:
     # Capture chat history BEFORE appending current question
     recent_history = [
         {"role": m["role"], "content": m["content"][:600]}
@@ -339,8 +340,10 @@ def _handle_question(question: str, model_override: str = None) -> None:
 
     # If the user typed a vague follow-up, use the last real question for retrieval
     search_query = _resolve_search_query(question)
-    # Use model_override (e.g. for Re-ask with 70b) or the user's selected model
+    # Use model_override or the user's selected model
     model_to_use = model_override or st.session_state.model
+    # Use explicitly passed style or the current session state style
+    _style = answer_style or st.session_state.get("answer_style", "Normal")
 
     with st.chat_message("user"):
         st.markdown(question)
@@ -379,6 +382,7 @@ def _handle_question(question: str, model_override: str = None) -> None:
                 st.session_state.language,
                 include_followups=True,
                 chat_history=recent_history if recent_history else None,
+                answer_style=_style,
             )
             t_llm = time.time() - t1
 
@@ -423,10 +427,10 @@ def _handle_question(question: str, model_override: str = None) -> None:
         _show_images(images, expanded=True)
         _show_sources(chunks)
 
-        # Feedback + Bookmark + Retry
+        # Feedback + Bookmark
         msg_idx = len(st.session_state.messages)
         existing_fb = st.session_state.feedback.get(msg_idx)
-        fb1, fb2, bm_col, retry_col = st.columns([1, 1, 2, 2])
+        fb1, fb2, bm_col = st.columns([1, 1, 3])
         if existing_fb:
             st.caption(f"You rated this: {'👍' if existing_fb == 'up' else '👎'}")
         else:
@@ -443,9 +447,6 @@ def _handle_question(question: str, model_override: str = None) -> None:
                 "ts": time.strftime("%H:%M"),
             })
             st.toast("Bookmarked! ✅")
-        if retry_col.button("🔄 Re-ask with 70b", key=f"retry_{msg_idx}"):
-            st.session_state["_retry_q"] = question
-            st.rerun()
 
         # Follow-up questions are stored in session state and rendered
         # in the MAIN FLOW below — not here — so they survive reruns correctly.
@@ -453,6 +454,10 @@ def _handle_question(question: str, model_override: str = None) -> None:
     st.session_state.messages.append({
         "role": "assistant", "content": answer,
         "images": images[:3], "sources": chunks,
+        "actual_model":    actual_model,
+        "model_requested": model_to_use,
+        "t_search":        round(t_search, 1),
+        "t_llm":           round(t_llm, 1),
     })
 
 
@@ -546,12 +551,12 @@ with st.sidebar:
 
         # Available Groq models — model ID → friendly label
         _MODEL_IDS = [
-            "llama-3.1-8b-instant",
-            "meta-llama/llama-4-scout-17b-16e-instruct",
-            "llama-3.3-70b-versatile",
-            "openai/gpt-oss-20b",
             "openai/gpt-oss-120b",
+            "meta-llama/llama-4-scout-17b-16e-instruct",
+            "openai/gpt-oss-20b",
+            "llama-3.3-70b-versatile",
             "qwen/qwen3-32b",
+            "llama-3.1-8b-instant",
         ]
         _MODEL_LABELS = {
             "llama-3.1-8b-instant":                        "⚡ Llama 3.1 8B  (fastest)",
@@ -707,15 +712,27 @@ for _i, msg in enumerate(st.session_state.messages):
             _show_images(msg["images"], expanded=False)
         if msg.get("sources"):
             _show_sources(msg["sources"])
-        # ── Persistent feedback / bookmark / retry buttons for assistant msgs ──
+        # ── Persistent timing + feedback / bookmark buttons for assistant msgs ──
         if msg["role"] == "assistant":
+            # Show timing/model info (stored in message dict so it survives reruns)
+            if msg.get("actual_model"):
+                _fb_note = (
+                    f"  *(fell back from `{msg['model_requested']}`)*"
+                    if msg.get("model_requested") and msg["actual_model"] != msg["model_requested"]
+                    else ""
+                )
+                st.caption(
+                    f"⏱ Search: {msg['t_search']:.1f}s · Answer: {msg['t_llm']:.1f}s · "
+                    f"Total: {msg['t_search']+msg['t_llm']:.1f}s · "
+                    f"Model: `{msg['actual_model']}`{_fb_note}"
+                )
             _msg_q = (
                 st.session_state.messages[_i - 1]["content"]
                 if _i > 0 and st.session_state.messages[_i - 1]["role"] == "user"
                 else ""
             )
             _existing_fb = st.session_state.feedback.get(_i)
-            _fb1, _fb2, _bm_col, _retry_col = st.columns([1, 1, 2, 2])
+            _fb1, _fb2, _bm_col = st.columns([1, 1, 3])
             if _existing_fb:
                 _fb1.caption(f"{'👍' if _existing_fb == 'up' else '👎'} Rated")
             else:
@@ -732,17 +749,10 @@ for _i, msg in enumerate(st.session_state.messages):
                     "ts": time.strftime("%H:%M"),
                 })
                 st.toast("Bookmarked! ✅")
-            if _msg_q and _retry_col.button("🔄 Re-ask with 70b", key=f"retry_{_i}"):
-                st.session_state["_retry_q"] = _msg_q
-                st.rerun()
 
 _summarize_doc: Optional[str] = st.session_state.pop("_summarize_doc", None)
 if _summarize_doc:
     _handle_summarize(_summarize_doc)
-
-_retry_q: Optional[str] = st.session_state.pop("_retry_q", None)
-if _retry_q:
-    _handle_question(_retry_q, model_override="llama-3.3-70b-versatile")
 
 _pending_q: Optional[str] = st.session_state.pop("_pending_q", None)
 
@@ -780,6 +790,27 @@ if _follow_ups and st.session_state.messages:
             st.session_state["_pending_q"] = _fq
             st.session_state["_follow_ups"] = []
             st.rerun()
+
+# ── Answer style buttons (Short / Long) ─────────────────────────────────────
+if st.session_state.documents:
+    _cur_style = st.session_state.get("answer_style", "Normal")
+    _asc1, _asc2, _asc3 = st.columns([1, 1, 4])
+    if _asc1.button(
+        "📝 Short Answer", key="btn_style_short",
+        use_container_width=True,
+        type="primary" if _cur_style == "Short" else "secondary",
+    ):
+        st.session_state.answer_style = "Normal" if _cur_style == "Short" else "Short"
+        st.rerun()
+    if _asc2.button(
+        "📚 Long Answer", key="btn_style_long",
+        use_container_width=True,
+        type="primary" if _cur_style == "Long" else "secondary",
+    ):
+        st.session_state.answer_style = "Normal" if _cur_style == "Long" else "Long"
+        st.rerun()
+    if _cur_style != "Normal":
+        _asc3.caption(f"✅ **{_cur_style} Answer** mode active · click the button again to reset")
 
 _placeholder = (
     "Ask a question about your documents…"
