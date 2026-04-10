@@ -43,12 +43,30 @@ _SYSTEM_PROMPT = (
     "- If the answer is genuinely not in the context, say so clearly — "
     "do NOT hallucinate facts.\n"
     "- Be concise but complete.\n"
-    "- If the user specifies a language, respond entirely in that language."
+    "- If LANGUAGE appears in the prompt, use ONLY that language for EVERY part "
+    "of your response including follow-up questions."
 )
 
-_SYSTEM_PROMPT_WITH_FU = (
-    _SYSTEM_PROMPT
-    + "\n\nAfter your answer, add a line containing only '---FU---', "
+def _make_system_prompt(language: str = "English", include_fu: bool = False) -> str:
+    """Build a system prompt that bakes the language directly in (more reliable)."""
+    lang_note = (
+        f"\n\nCRITICAL: You MUST respond ENTIRELY in {language}. "
+        "Every sentence, every bullet point, every follow-up question "
+        f"MUST be written in {language}. Do not use English."
+        if language != "English" else ""
+    )
+    fu_note = (
+        f"\n\nAfter your answer, output a single line containing exactly '---FU---', "
+        f"then write exactly 3 short follow-up questions "
+        f"{f'in {language} ' if language != \"English\" else ''}"
+        "numbered 1. 2. 3. (each under 12 words)."
+        if include_fu else ""
+    )
+    return _SYSTEM_PROMPT + lang_note + fu_note
+
+# Keep for backward compat
+_SYSTEM_PROMPT_WITH_FU = _SYSTEM_PROMPT + (
+    "\n\nAfter your answer, add a line containing only '---FU---', "
     "then list exactly 3 short follow-up questions the user might ask next, "
     "numbered 1. 2. 3. Keep each question under 12 words."
 )
@@ -90,20 +108,27 @@ def _build_qa_prompt(
         )
 
     context = "\n\n" + ("─" * 60) + "\n\n".join(context_blocks)
-    lang_instruction = f"\n\nIMPORTANT: Respond in {language}." if language != "English" else ""
     style_instruction = _STYLE_INSTRUCTIONS.get(style, "")
-    # Embed the FU instruction directly in user prompt for better model compliance
+    # Language instruction goes FIRST (most prominent placement for model compliance)
+    lang_instruction = (
+        f"\nIMPORTANT: Write your ENTIRE response in {language} only. "
+        f"Every word must be in {language}.\n"
+        if language != "English" else ""
+    )
+    # FU in user prompt reinforces system prompt instruction
     fu_instruction = (
-        "\n\nAfter your answer, output a single line containing exactly '---FU---', "
-        "then write exactly 3 short follow-up questions numbered 1. 2. 3. "
-        "(each under 12 words). Do not skip the '---FU---' line."
+        f"\nAfter your answer, output exactly '---FU---' on its own line, "
+        f"then 3 follow-up questions "
+        f"{f'in {language} ' if language != \"English\" else ''}"
+        "numbered 1. 2. 3. (max 12 words each)."
         if include_fu else ""
     )
     prompt = (
+        f"{lang_instruction}"
         f"RETRIEVED CONTEXT FROM DOCUMENTS:\n{context}\n\n"
         f"USER QUESTION: {question}\n\n"
         f"Answer the question based on the context above and cite sources."
-        f"{style_instruction}{lang_instruction}{fu_instruction}"
+        f"{style_instruction}{fu_instruction}"
     )
     return prompt[:_MAX_PROMPT_CHARS]
 
@@ -202,8 +227,8 @@ def get_answer(
         question, chunks, language,
         style=answer_style, include_fu=include_followups,
     )
-    # System prompt also carries the FU instruction as reinforcement
-    system = _SYSTEM_PROMPT_WITH_FU if include_followups else _SYSTEM_PROMPT
+    # Dynamic system prompt carries language + FU instructions baked in
+    system = _make_system_prompt(language=language, include_fu=include_followups)
 
     # Build message list: system + prior conversation + current question
     messages: List[Dict] = [{"role": "system", "content": system}]
