@@ -125,9 +125,9 @@ def _build_qa_prompt(
         if include_fu else ""
     )
     comprehensive_instruction = (
-        "\nINSTRUCTION: The ENTIRE document has been provided above. "
-        "List EVERY section, heading, and topic you can find across ALL context blocks — "
-        "do not omit any. Organise the output as a structured numbered or bulleted list."
+        "\nINSTRUCTION: The context above contains a compact table of contents extracted "
+        "from the document. List EVERY section and heading you can find — do not omit any. "
+        "Organise the output as a structured numbered or bulleted list with brief descriptions."
         if comprehensive else ""
     )
     prompt = (
