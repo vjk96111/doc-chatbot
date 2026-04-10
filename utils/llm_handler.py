@@ -90,7 +90,7 @@ def _groq_client(api_key: str) -> Groq:
 
 # ─────────────────────────────────── public API ──────────────────────────────
 
-def _call_with_retry(client: Groq, model_name: str, messages: list, temperature: float, max_tokens: int) -> str:
+def _call_with_retry(client: Groq, model_name: str, messages: list, temperature: float, max_tokens: int) -> tuple:
     """
     Call Groq with exponential backoff + automatic model fallback on rate limit.
     Tries up to 3 times per model, then falls back to a smaller model.
@@ -106,7 +106,7 @@ def _call_with_retry(client: Groq, model_name: str, messages: list, temperature:
                     temperature=temperature,
                     max_tokens=max_tokens,
                 )
-                return response.choices[0].message.content
+                return response.choices[0].message.content, model  # (content, actual_model)
             except RateLimitError:
                 if attempt < 2:
                     wait = 10 * (2 ** attempt)  # 10s, 20s
@@ -121,7 +121,8 @@ def _call_with_retry(client: Groq, model_name: str, messages: list, temperature:
 
     return (
         "⚠️ The AI service is currently rate-limited (too many requests). "
-        "Please wait 30 seconds and try again."
+        "Please wait 30 seconds and try again.",
+        "none",
     )
 
 
@@ -151,27 +152,34 @@ def get_answer(
     model_name: str = "llama-3.1-8b-instant",
     language: str = "English",
     include_followups: bool = True,
+    chat_history: List[Dict] = None,
 ) -> tuple:
     """
     Returns (answer_text, follow_up_questions_list).
+    chat_history: list of {role, content} dicts from prior turns (not current question).
     Follow-up questions are embedded in the same LLM call — no extra API request.
     """
     client = _groq_client(api_key)
     prompt = _build_qa_prompt(question, chunks, language)
     system = _SYSTEM_PROMPT_WITH_FU if include_followups else _SYSTEM_PROMPT
-    raw = _call_with_retry(
+
+    # Build message list: system + prior conversation + current question
+    messages: List[Dict] = [{"role": "system", "content": system}]
+    if chat_history:
+        messages.extend(chat_history)
+    messages.append({"role": "user", "content": prompt})
+
+    raw, actual_model = _call_with_retry(
         client,
         model_name,
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": prompt},
-        ],
+        messages=messages,
         temperature=0.2,
         max_tokens=2048,
     )
     if include_followups:
-        return _parse_followups(raw)
-    return raw.strip(), []
+        answer, follow_ups = _parse_followups(raw)
+        return answer, follow_ups, actual_model
+    return raw.strip(), [], actual_model
 
 
 def get_document_summary(
@@ -195,13 +203,14 @@ def get_document_summary(
     client = _groq_client(api_key)
     text = full_text[:20_000] if len(full_text) > 20_000 else full_text
     prompt = _SUMMARY_PROMPT_TEMPLATE.format(doc_name=doc_name, text=text)
-    return _call_with_retry(
+    content, _ = _call_with_retry(
         client,
         model_name,
         messages=[{"role": "user", "content": prompt}],
         temperature=0.3,
         max_tokens=1024,
     )
+    return content
 
 
 def get_follow_up_questions(
@@ -220,7 +229,7 @@ def get_follow_up_questions(
         "Return ONLY a numbered list: 1. ...\n2. ...\n3. ..."
     )
     client = _groq_client(api_key)
-    raw = _call_with_retry(
+    raw, _ = _call_with_retry(
         client, model_name,
         messages=[{"role": "user", "content": prompt}],
         temperature=0.7, max_tokens=150,
@@ -251,7 +260,7 @@ def get_highlight(
         "Return ONLY the exact sentence, nothing else."
     )
     client = _groq_client(api_key)
-    result = _call_with_retry(
+    result, _ = _call_with_retry(
         client, model_name,
         messages=[{"role": "user", "content": prompt}],
         temperature=0.0, max_tokens=150,
