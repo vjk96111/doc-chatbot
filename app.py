@@ -75,6 +75,62 @@ st.markdown(
 # Warm up the embedding model immediately — cached after first load
 _load_embed_model()
 
+# ══════════════════════════════════ LOGIN GATE ═══════════════════════════════
+
+def _check_login() -> bool:
+    """Return True if the user is authenticated, False otherwise."""
+    # Support multiple users: USERS = {"alice": "pass1", "bob": "pass2"}
+    # Or a single APP_PASSWORD for shared access.
+    users: Dict[str, str] = {}
+    try:
+        if "USERS" in st.secrets:
+            users = dict(st.secrets["USERS"])
+        elif "APP_PASSWORD" in st.secrets:
+            users = {"user": st.secrets["APP_PASSWORD"]}
+    except Exception:
+        pass
+
+    # Fallback for local dev (no secrets file) — no login required
+    if not users:
+        return True
+
+    if st.session_state.get("authenticated"):
+        return True
+
+    # ── Login form ────────────────────────────────────────────────────────────
+    st.markdown(
+        """
+        <div style="max-width:380px;margin:6rem auto;padding:2.5rem 2rem;
+                    border:1px solid #dee2e6;border-radius:14px;
+                    box-shadow:0 4px 24px rgba(0,0,0,0.08);text-align:center;">
+            <div style="font-size:3rem;margin-bottom:0.5rem;">📄</div>
+            <h2 style="margin-bottom:0.2rem;">DocChat</h2>
+            <p style="color:#6c757d;margin-bottom:1.5rem;">Sign in to continue</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    col = st.columns([1, 1.4, 1])[1]
+    with col:
+        with st.form("login_form", clear_on_submit=False):
+            username = st.text_input("Username")
+            password = st.text_input("Password", type="password")
+            submitted = st.form_submit_button("Sign in", use_container_width=True)
+
+        if submitted:
+            if username in users and users[username] == password:
+                st.session_state["authenticated"] = True
+                st.rerun()
+            else:
+                st.error("Incorrect username or password.")
+
+    st.stop()
+    return False
+
+
+_check_login()
+
 # ══════════════════════════════════ SESSION STATE ════════════════════════════
 
 def _init_state() -> None:
@@ -265,6 +321,18 @@ def _handle_summarize(doc_name: str) -> None:
 with st.sidebar:
     st.markdown("## 📄 DocChat")
     st.caption("AI-powered document assistant")
+
+    # ── Logout button (only shown when login is active) ───────────────────────
+    _has_login = False
+    try:
+        _has_login = bool(st.secrets.get("USERS") or st.secrets.get("APP_PASSWORD"))
+    except Exception:
+        pass
+    if _has_login:
+        if st.button("🚪 Sign out", use_container_width=True):
+            st.session_state["authenticated"] = False
+            st.rerun()
+
     st.divider()
 
     # ── API / model settings ──────────────────────────────────────────────────
