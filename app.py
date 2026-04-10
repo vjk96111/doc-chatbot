@@ -43,12 +43,15 @@ def _get_css(dark: bool) -> str:
     text    = "#e0e0f0" if dark else "#212529"
     cap     = "#a0a0c0" if dark else "#6c757d"
     inp_bg  = "#24243a" if dark else "#ffffff"
+    btn_bg  = "#2e2e4a" if dark else "#ffffff"
+    btn_bd  = "#5a5a8a" if dark else "#ced4da"
     code_fg = "#a8d8ff" if dark else "#d63384"
     hl_bg   = "#3a3a1a" if dark else "#fffde7"
     return f"""
     <style>
     /* ── Main app background ── */
-    .stApp, [data-testid="stAppViewContainer"] {{
+    .stApp, [data-testid="stAppViewContainer"],
+    [data-testid="stAppViewBlockContainer"] {{
         background-color: {bg} !important;
         color: {text} !important;
     }}
@@ -61,10 +64,13 @@ def _get_css(dark: bool) -> str:
         background-color: {sb_bg} !important;
     }}
     [data-testid="stSidebar"] p,
-    [data-testid="stSidebar"] span,
+    [data-testid="stSidebar"] span:not([data-baseweb]),
     [data-testid="stSidebar"] label,
-    [data-testid="stSidebar"] small,
-    [data-testid="stSidebar"] div {{
+    [data-testid="stSidebar"] small {{
+        color: {text} !important;
+    }}
+    [data-testid="stWidgetLabel"] p,
+    [data-testid="stWidgetLabel"] label {{
         color: {text} !important;
     }}
     /* ── Chat messages ── */
@@ -91,10 +97,69 @@ def _get_css(dark: bool) -> str:
     }}
     /* ── Text / Password inputs ── */
     .stTextInput > div > div > input,
-    .stTextArea > div > div > textarea {{
+    .stTextArea > div > div > textarea,
+    [data-baseweb="input"] input,
+    [data-baseweb="textarea"] textarea {{
         background-color: {inp_bg} !important;
         color: {text} !important;
         border-color: {card_bd} !important;
+    }}
+    input::placeholder, textarea::placeholder {{
+        color: {cap} !important;
+    }}
+    /* ── BaseUI Selectbox ── */
+    [data-baseweb="select"] > div:first-child {{
+        background-color: {inp_bg} !important;
+        border-color: {card_bd} !important;
+        color: {text} !important;
+    }}
+    [data-baseweb="select"] [data-id="select-value"],
+    [data-baseweb="select"] span,
+    [data-baseweb="select"] div {{
+        color: {text} !important;
+    }}
+    [data-baseweb="select"] svg {{
+        fill: {text} !important;
+    }}
+    /* ── BaseUI Dropdown popup (opened selectbox) ── */
+    [data-baseweb="popover"],
+    [data-baseweb="popover"] ul,
+    [data-baseweb="menu"] {{
+        background-color: {card_bg} !important;
+        border-color: {card_bd} !important;
+    }}
+    [data-baseweb="menu"] li,
+    [data-baseweb="menu"] [role="option"],
+    [data-baseweb="option"] {{
+        background-color: {card_bg} !important;
+        color: {text} !important;
+    }}
+    [data-baseweb="menu"] li:hover,
+    [data-baseweb="option"]:hover {{
+        background-color: {card_bd} !important;
+    }}
+    /* ── Buttons ── */
+    .stButton > button,
+    [data-testid^="baseButton"] {{
+        background-color: {btn_bg} !important;
+        color: {text} !important;
+        border-color: {btn_bd} !important;
+    }}
+    .stButton > button:hover,
+    [data-testid^="baseButton"]:hover {{
+        background-color: {card_bd} !important;
+        border-color: {text} !important;
+    }}
+    /* Keep primary buttons their accent color */
+    .stButton > button[kind="primary"],
+    [data-testid="baseButton-primary"] {{
+        background-color: #e05252 !important;
+        color: #ffffff !important;
+        border-color: #e05252 !important;
+    }}
+    .stButton > button p,
+    [data-testid^="baseButton"] p {{
+        color: {text} !important;
     }}
     /* ── Expanders ── */
     [data-testid="stExpander"] details {{
@@ -103,13 +168,21 @@ def _get_css(dark: bool) -> str:
         border-radius: 8px;
     }}
     [data-testid="stExpander"] summary,
+    [data-testid="stExpander"] summary p,
     [data-testid="stExpander"] details > div {{
         background-color: {card_bg} !important;
         color: {text} !important;
     }}
-    /* ── Selectbox / Radio ── */
-    [data-testid="stSelectbox"] > div,
-    [data-testid="stRadio"] label {{
+    [data-testid="stExpander"] summary svg {{
+        fill: {text} !important;
+    }}
+    /* ── Toggle ── */
+    [data-testid="stToggle"] label {{
+        color: {text} !important;
+    }}
+    /* ── Radio ── */
+    [data-testid="stRadio"] label,
+    [data-testid="stRadio"] p {{
         color: {text} !important;
     }}
     /* ── General markdown text ── */
@@ -129,8 +202,24 @@ def _get_css(dark: bool) -> str:
         background-color: {card_bg} !important;
         color: {code_fg} !important;
     }}
+    /* ── Info / Warning / Error boxes ── */
+    [data-testid="stAlert"] {{
+        background-color: {card_bg} !important;
+        border-color: {card_bd} !important;
+    }}
+    [data-testid="stAlert"] p {{
+        color: {text} !important;
+    }}
     /* ── Dividers ── */
     hr {{ border-color: {card_bd}; }}
+    /* ── Status widget ── */
+    [data-testid="stStatusWidget"] {{
+        background-color: {card_bg} !important;
+        color: {text} !important;
+    }}
+    /* ── Scrollbar ── */
+    ::-webkit-scrollbar-track {{ background: {bg}; }}
+    ::-webkit-scrollbar-thumb {{ background: {card_bd}; border-radius: 4px; }}
     /* ── Custom cards ── */
     .welcome-card {{
         background: linear-gradient(135deg,#1a73e8 0%,#0d47a1 100%);
@@ -158,6 +247,156 @@ def _get_css(dark: bool) -> str:
     div[data-testid="stHorizontalBlock"] button {{
         width:100%;white-space:normal;height:auto;
         padding:0.45rem 0.6rem;font-size:0.85rem;
+    }}
+
+    /* ══════════════════════════════════════════════════════
+       MOBILE RESPONSIVE  (≤ 768 px)
+       ══════════════════════════════════════════════════════ */
+    @media only screen and (max-width: 768px) {{
+
+        /* ── Reduce main padding so content fills the screen ── */
+        .main .block-container {{
+            padding: 0.6rem 0.8rem 5rem 0.8rem !important;
+            max-width: 100% !important;
+        }}
+
+        /* ── Sidebar: auto-close; overlay style when open ── */
+        [data-testid="stSidebar"] {{
+            min-width: 80vw !important;
+            max-width: 88vw !important;
+        }}
+
+        /* ── Headings scale down ── */
+        h1 {{ font-size: 1.4rem !important; }}
+        h2 {{ font-size: 1.2rem !important; }}
+        h3 {{ font-size: 1.05rem !important; }}
+
+        /* ── Welcome card ── */
+        .welcome-card {{
+            padding: 1.4rem 1rem !important;
+        }}
+        .welcome-card h2 {{ font-size: 1.4rem !important; }}
+        .welcome-card p  {{ font-size: 0.95rem !important; }}
+
+        /* ── Feature cards: stack vertically on mobile ── */
+        [data-testid="stHorizontalBlock"]:has(.feature-card) {{
+            flex-direction: column !important;
+        }}
+        .feature-card {{
+            height: auto !important;
+            margin-bottom: 0.5rem;
+        }}
+
+        /* ── Chat messages: reduce padding / font ── */
+        [data-testid="stChatMessage"] {{
+            padding: 0.6rem 0.8rem !important;
+        }}
+        [data-testid="stChatMessage"] p,
+        [data-testid="stChatMessage"] li {{
+            font-size: 0.93rem !important;
+            line-height: 1.5 !important;
+        }}
+
+        /* ── Chat avatar: shrink ── */
+        [data-testid="stChatMessage"] [data-testid="chatAvatarIcon-user"],
+        [data-testid="stChatMessage"] [data-testid="chatAvatarIcon-assistant"] {{
+            width: 1.8rem !important;
+            height: 1.8rem !important;
+            font-size: 0.85rem !important;
+        }}
+
+        /* ── Chat input: full width, bigger touch target ── */
+        [data-testid="stChatInput"] textarea {{
+            font-size: 1rem !important;
+            min-height: 48px !important;
+        }}
+        [data-testid="stBottom"] {{
+            padding: 0.4rem 0.5rem !important;
+        }}
+
+        /* ── All buttons: minimum touch target 44 px ── */
+        .stButton > button,
+        [data-testid^="baseButton"] {{
+            min-height: 44px !important;
+            font-size: 0.9rem !important;
+            border-radius: 8px !important;
+        }}
+
+        /* ── Feedback row: reduce column widths ── */
+        div[data-testid="stHorizontalBlock"] button {{
+            padding: 0.5rem 0.3rem !important;
+            font-size: 0.8rem !important;
+        }}
+
+        /* ── Follow-up buttons: stack on narrow screens ── */
+        [data-testid="stHorizontalBlock"]:has([key*="fu_main"]) {{
+            flex-wrap: wrap !important;
+        }}
+
+        /* ── Answer-style buttons bar ── */
+        [data-testid="stHorizontalBlock"]:has([key="btn_style_short"]) {{
+            gap: 0.4rem !important;
+        }}
+
+        /* ── Expanders: full width ── */
+        [data-testid="stExpander"] details {{
+            border-radius: 6px !important;
+        }}
+        [data-testid="stExpander"] summary {{
+            font-size: 0.9rem !important;
+            padding: 0.5rem 0.7rem !important;
+        }}
+
+        /* ── Sources / image expander content ── */
+        [data-testid="stExpander"] details > div {{
+            padding: 0.4rem 0.6rem !important;
+        }}
+
+        /* ── Captions: smaller ── */
+        .stCaption,
+        [data-testid="stCaptionContainer"] p {{
+            font-size: 0.72rem !important;
+        }}
+
+        /* ── Bookmark cards ── */
+        .bookmark-card {{
+            padding: 0.6rem !important;
+            font-size: 0.88rem !important;
+        }}
+
+        /* ── Sidebar dividers spacing ── */
+        [data-testid="stSidebar"] hr {{
+            margin: 0.5rem 0 !important;
+        }}
+
+        /* ── Code blocks don't overflow ── */
+        code, pre {{
+            white-space: pre-wrap !important;
+            word-break: break-word !important;
+            font-size: 0.82rem !important;
+        }}
+
+        /* ── Images inside chat: fill width ── */
+        [data-testid="stImage"] img {{
+            max-width: 100% !important;
+            height: auto !important;
+        }}
+    }}
+
+    /* ── Very small phones (≤ 420 px): extra compact ── */
+    @media only screen and (max-width: 420px) {{
+        .main .block-container {{
+            padding: 0.4rem 0.5rem 5rem 0.5rem !important;
+        }}
+        h2 {{ font-size: 1.1rem !important; }}
+        [data-testid="stChatMessage"] p,
+        [data-testid="stChatMessage"] li {{
+            font-size: 0.87rem !important;
+        }}
+        .stButton > button,
+        [data-testid^="baseButton"] {{
+            font-size: 0.82rem !important;
+        }}
     }}
     </style>
     """
@@ -221,6 +460,7 @@ def _init_state() -> None:
         "dark_mode":     False,
         "highlight_on":  False,
         "answer_style":  "Normal",   # "Short", "Normal", or "Long"
+        "_lang_version": 0,           # increments on language change to bust history
         "bookmarks":     [],
         "feedback":      {},
         "search_mode":   "Semantic",
@@ -234,6 +474,11 @@ def _init_state() -> None:
 
 
 _init_state()
+# Inject mobile viewport meta tag (Streamlit omits width=device-width by default)
+st.markdown(
+    '<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">',
+    unsafe_allow_html=True,
+)
 st.markdown(_get_css(st.session_state.dark_mode), unsafe_allow_html=True)
 _load_embed_model()
 
@@ -332,11 +577,13 @@ def _resolve_search_query(question: str) -> str:
 
 # CORE ACTIONS
 def _handle_question(question: str, model_override: str = None, answer_style: str = None) -> None:
-    # Capture chat history BEFORE appending current question
-    recent_history = [
-        {"role": m["role"], "content": m["content"][:600]}
-        for m in st.session_state.messages[-4:]   # up to last 2 Q+A exchanges
-    ]
+    # Only pass recent history if the language hasn't changed since those messages
+    # (_lang_version tracks language switches; changes bust the history)
+    _cur_lang_ver = st.session_state.get("_lang_version", 0)
+    recent_history = []
+    for m in st.session_state.messages[-4:]:
+        if m.get("lang_version", 0) == _cur_lang_ver:
+            recent_history.append({"role": m["role"], "content": m["content"][:600]})
 
     # If the user typed a vague follow-up, use the last real question for retrieval
     search_query = _resolve_search_query(question)
@@ -348,7 +595,8 @@ def _handle_question(question: str, model_override: str = None, answer_style: st
     with st.chat_message("user"):
         st.markdown(question)
     st.session_state.messages.append(
-        {"role": "user", "content": question, "images": [], "sources": []}
+        {"role": "user", "content": question, "images": [], "sources": [],
+         "lang_version": st.session_state.get("_lang_version", 0)}
     )
 
     with st.chat_message("assistant"):
@@ -458,6 +706,7 @@ def _handle_question(question: str, model_override: str = None, answer_style: st
         "model_requested": model_to_use,
         "t_search":        round(t_search, 1),
         "t_llm":           round(t_llm, 1),
+        "lang_version":    st.session_state.get("_lang_version", 0),
     })
 
 
@@ -513,9 +762,13 @@ with st.sidebar:
             "🌐 Answer language",
             options=["English", "Kannada", "Hindi"],
             index=["English", "Kannada", "Hindi"].index(st.session_state.language),
+            key="lang_selectbox",
         )
         if lang != st.session_state.language:
             st.session_state.language = lang
+            # Increment version so chat history is NOT passed to model after switch
+            st.session_state["_lang_version"] = st.session_state.get("_lang_version", 0) + 1
+            st.rerun()
 
         st.session_state.highlight_on = st.toggle(
             "📌 Show key excerpt", value=st.session_state.highlight_on
