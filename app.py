@@ -10,7 +10,7 @@ from typing import List, Dict, Optional
 import streamlit as st
 
 from utils.document_processor import extract_from_pdf, extract_from_docx
-from utils.vector_store import VectorStore
+from utils.vector_store import VectorStore, get_embed_model
 from utils.llm_handler import get_answer, get_document_summary
 
 
@@ -22,6 +22,11 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+# Pre-load the embedding model once at startup — cached across all sessions
+@st.cache_resource(show_spinner="⚙️ Loading AI model (one-time, ~10 seconds)…")
+def _load_embed_model():
+    return get_embed_model()
 
 # ══════════════════════════════════ CUSTOM CSS ═══════════════════════════════
 
@@ -66,6 +71,9 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+
+# Warm up the embedding model immediately — cached after first load
+_load_embed_model()
 
 # ══════════════════════════════════ SESSION STATE ════════════════════════════
 
