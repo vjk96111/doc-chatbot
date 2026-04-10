@@ -7,14 +7,16 @@ one-shot document summarisation.
 import time
 from typing import List, Dict
 
-from groq import Groq, RateLimitError
+from groq import Groq, RateLimitError, BadRequestError
 
-# Fallback model order when rate-limited (smaller = fewer tokens/min used)
+# Fallback model order — all have large context windows (128k+)
 _FALLBACK_MODELS = [
     "llama-3.3-70b-versatile",
-    "llama3-70b-8192",
     "llama-3.1-8b-instant",
 ]
+
+# Safe character limit per prompt (~100k chars ≈ 25k tokens, well within 128k window)
+_MAX_PROMPT_CHARS = 80_000
 
 # ─────────────────────────────────── prompts ─────────────────────────────────
 
@@ -62,11 +64,13 @@ def _build_qa_prompt(question: str, chunks: List[Dict]) -> str:
         )
 
     context = "\n\n" + ("─" * 60) + "\n\n".join(context_blocks)
-    return (
+    prompt = (
         f"RETRIEVED CONTEXT FROM DOCUMENTS:\n{context}\n\n"
         f"USER QUESTION: {question}\n\n"
         "Answer the question based on the context above and cite sources."
     )
+    # Truncate to safe limit to avoid BadRequestError
+    return prompt[:_MAX_PROMPT_CHARS]
 
 
 def _groq_client(api_key: str) -> Groq:
@@ -98,8 +102,16 @@ def _call_with_retry(client: Groq, model_name: str, messages: list, temperature:
                     time.sleep(wait)
                 else:
                     break  # try next model
+            except BadRequestError as exc:
+                # Prompt too long even after truncation — shorten and retry once
+                if attempt == 0:
+                    for msg in messages:
+                        if msg.get("role") == "user" and len(msg["content"]) > 10_000:
+                            msg["content"] = msg["content"][:10_000]
+                else:
+                    return "⚠️ The document content is too large to process. Try uploading a shorter document or asking a more specific question."
             except Exception as exc:
-                raise exc  # non-rate-limit errors bubble up immediately
+                raise exc
 
     return (
         "⚠️ The AI service is currently rate-limited (too many requests). "
