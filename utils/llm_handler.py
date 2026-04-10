@@ -4,9 +4,17 @@ Handles all calls to Groq: Q&A over retrieved context and
 one-shot document summarisation.
 """
 
+import time
 from typing import List, Dict
 
-from groq import Groq
+from groq import Groq, RateLimitError
+
+# Fallback model order when rate-limited (smaller = fewer tokens/min used)
+_FALLBACK_MODELS = [
+    "llama-3.3-70b-versatile",
+    "llama3-70b-8192",
+    "llama-3.1-8b-instant",
+]
 
 # ─────────────────────────────────── prompts ─────────────────────────────────
 
@@ -67,29 +75,49 @@ def _groq_client(api_key: str) -> Groq:
 
 # ─────────────────────────────────── public API ──────────────────────────────
 
+def _call_with_retry(client: Groq, model_name: str, messages: list, temperature: float, max_tokens: int) -> str:
+    """
+    Call Groq with exponential backoff + automatic model fallback on rate limit.
+    Tries up to 3 times per model, then falls back to a smaller model.
+    """
+    models_to_try = [model_name] + [m for m in _FALLBACK_MODELS if m != model_name]
+
+    for model in models_to_try:
+        for attempt in range(3):
+            try:
+                response = client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                )
+                return response.choices[0].message.content
+            except RateLimitError:
+                if attempt < 2:
+                    wait = 10 * (2 ** attempt)  # 10s, 20s
+                    time.sleep(wait)
+                else:
+                    break  # try next model
+            except Exception as exc:
+                raise exc  # non-rate-limit errors bubble up immediately
+
+    return (
+        "⚠️ The AI service is currently rate-limited (too many requests). "
+        "Please wait 30 seconds and try again."
+    )
+
+
 def get_answer(
     question: str,
     chunks: List[Dict],
     api_key: str,
     model_name: str = "llama-3.3-70b-versatile",
 ) -> str:
-    """
-    Generate a grounded answer from retrieved document chunks.
-
-    Args:
-        question:   User's question.
-        chunks:     Top-k chunks returned by VectorStore.search().
-        api_key:    Groq API key.
-        model_name: Groq model identifier.
-
-    Returns:
-        Answer string in Markdown.
-    """
     client = _groq_client(api_key)
     prompt = _build_qa_prompt(question, chunks)
-
-    response = client.chat.completions.create(
-        model=model_name,
+    return _call_with_retry(
+        client,
+        model_name,
         messages=[
             {"role": "system", "content": _SYSTEM_PROMPT},
             {"role": "user", "content": prompt},
@@ -97,7 +125,6 @@ def get_answer(
         temperature=0.2,
         max_tokens=2048,
     )
-    return response.choices[0].message.content
 
 
 def get_document_summary(
@@ -119,16 +146,12 @@ def get_document_summary(
         Summary string in Markdown.
     """
     client = _groq_client(api_key)
-
-    # Groq context window is large, but be conservative for free tier
     text = full_text[:20_000] if len(full_text) > 20_000 else full_text
-
     prompt = _SUMMARY_PROMPT_TEMPLATE.format(doc_name=doc_name, text=text)
-
-    response = client.chat.completions.create(
-        model=model_name,
+    return _call_with_retry(
+        client,
+        model_name,
         messages=[{"role": "user", "content": prompt}],
         temperature=0.3,
         max_tokens=1024,
     )
-    return response.choices[0].message.content
