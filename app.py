@@ -544,12 +544,32 @@ with st.sidebar:
             else:
                 st.info("👉 [Get free Groq key →](https://console.groq.com)")
 
-        _model_opts = ["llama-3.1-8b-instant", "llama-3.3-70b-versatile"]
+        # Available Groq models — model ID → friendly label
+        _MODEL_IDS = [
+            "llama-3.1-8b-instant",
+            "meta-llama/llama-4-scout-17b-16e-instruct",
+            "llama-3.3-70b-versatile",
+            "openai/gpt-oss-20b",
+            "openai/gpt-oss-120b",
+            "qwen/qwen3-32b",
+        ]
+        _MODEL_LABELS = {
+            "llama-3.1-8b-instant":                        "⚡ Llama 3.1 8B  (fastest)",
+            "meta-llama/llama-4-scout-17b-16e-instruct":   "🦙 Llama 4 Scout 17B  (new · fast)",
+            "llama-3.3-70b-versatile":                     "🧠 Llama 3.3 70B  (reliable quality)",
+            "openai/gpt-oss-20b":                          "🚀 GPT-OSS 20B  (1000 TPS · smart)",
+            "openai/gpt-oss-120b":                         "💯 GPT-OSS 120B  (best quality)",
+            "qwen/qwen3-32b":                              "🌏 Qwen3 32B  (great multilingual)",
+        }
+        _cur_model = st.session_state.get("model", _MODEL_IDS[0])
+        if _cur_model not in _MODEL_IDS:
+            _cur_model = _MODEL_IDS[0]
         st.session_state.model = st.selectbox(
             "Model",
-            options=_model_opts,
-            index=_model_opts.index(st.session_state.get("model", _model_opts[0])),
-            help="8b instant = fastest ⚡  |  70b = best quality",
+            options=_MODEL_IDS,
+            index=_MODEL_IDS.index(_cur_model),
+            format_func=lambda x: _MODEL_LABELS.get(x, x),
+            help="🦙 Llama 4 = newest  ·  💯 GPT-OSS 120B = best quality  ·  ⚡ 8B = fastest",
         )
 
     st.divider()
