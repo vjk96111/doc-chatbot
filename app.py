@@ -658,24 +658,57 @@ def _resolve_search_query(question: str) -> str:
     return question
 
 
-# Patterns that indicate the user wants a comprehensive view of the whole document
-_COMPREHENSIVE_PATTERNS = [
-    "list all", "list every", "all contents", "all sections", "all topics",
-    "all chapters", "all heading", "table of contents", "toc",
+# Patterns that indicate user wants the document STRUCTURE (TOC / section overview)
+_TOC_PATTERNS = [
+    "all contents", "all sections", "all chapters", "all headings", "all heading",
+    "all topics", "all parts", "table of contents", "toc",
     "what does this document", "what is in this document", "what is in the document",
     "what does the document contain", "what does the document cover",
     "entire document", "full document", "whole document",
-    "full list", "complete list", "full overview", "complete overview",
-    "everything in", "everything covered", "all parts",
-    "overview of the document", "overview of this document",
+    "full overview", "complete overview", "overview of the document",
+    "overview of this document", "everything in", "everything covered",
     "what topics", "what subjects", "what areas", "what chapters",
-    "all the sections", "all the topics",
+    "all the sections", "all the topics", "list contents", "list sections",
+    "contents of this document", "contents of the document",
 ]
 
-def _is_comprehensive_query(question: str) -> bool:
-    """Return True if the question asks for a full/complete view of the document."""
+# Patterns that indicate user wants ALL instances of a SPECIFIC item type
+_LIST_ALL_PATTERNS = [
+    "list all", "list every", "show all", "show every",
+    "give me all", "give all", "all the ",
+    "complete list", "full list",
+]
+
+def _is_toc_query(question: str) -> bool:
+    """Return True if the question asks for the document structure / table of contents."""
     q = question.lower().strip()
-    return any(p in q for p in _COMPREHENSIVE_PATTERNS)
+    return any(p in q for p in _TOC_PATTERNS)
+
+def _is_list_all_query(question: str) -> bool:
+    """Return True if the question asks for all instances of a specific item (e.g. all measures)."""
+    q = question.lower().strip()
+    return any(p in q for p in _LIST_ALL_PATTERNS)
+
+def _is_comprehensive_query(question: str) -> bool:
+    """Return True if the question is a TOC or targeted full-list query."""
+    return _is_toc_query(question) or _is_list_all_query(question)
+
+def _build_toc_chunks(all_chunks: list) -> list:
+    """
+    Build a compact Table-of-Contents context from chunk metadata.
+    Returns a SINGLE synthetic chunk containing only section titles —
+    no full text — so the prompt stays tiny and the LLM responds fast.
+    """
+    seen: set = set()
+    lines: list = []
+    for c in all_chunks:
+        key = (c.get("doc_name", ""), c.get("source", ""))
+        if key not in seen:
+            seen.add(key)
+            lines.append(f"• [{c.get('doc_name','?')}]  {c.get('source','')}")
+    toc_text = "DOCUMENT STRUCTURE (all sections found):\n" + "\n".join(lines)
+    return [{"text": toc_text, "source": "Table of Contents",
+              "doc_name": "All Documents", "page": 0}]
 
 
 # CORE ACTIONS
@@ -709,11 +742,19 @@ def _handle_question(question: str, model_override: str = None, answer_style: st
             mode = st.session_state.search_mode
             all_chunks = st.session_state.vector_store.chunks
 
-            # For "list all / overview / table of contents" queries, return every
-            # chunk in document order so the LLM sees the full content (prompt is
-            # capped at 80 k chars so there's no token blowout).
-            if _is_comprehensive_query(search_query):
-                chunks = list(all_chunks)  # all chunks, preserve insertion order
+            if _is_toc_query(search_query):
+                # Document structure / TOC: send ONLY section titles (tiny prompt → fast)
+                chunks = _build_toc_chunks(all_chunks)
+            elif _is_list_all_query(search_query):
+                # "list all X": targeted search for that specific item, higher top_k
+                sem = st.session_state.vector_store.search(search_query, st.session_state.api_key, top_k=12)
+                kw  = keyword_search(search_query, all_chunks, top_k=8)
+                seen_texts: set = set()
+                chunks = []
+                for c in sem + kw:
+                    if c["text"] not in seen_texts:
+                        seen_texts.add(c["text"])
+                        chunks.append(c)
             elif mode == "Keyword":
                 chunks = keyword_search(search_query, all_chunks, top_k=5)
             elif mode == "Hybrid":
@@ -893,6 +934,24 @@ with st.sidebar:
             horizontal=True,
             help="Semantic=AI similarity · Keyword=exact words · Hybrid=both",
         )
+
+        st.divider()
+        st.caption("✏️ Answer length")
+        _cur_style_sb = st.session_state.get("answer_style", "Normal")
+        _sb1, _sb2, _sb3 = st.columns(3)
+        for _col, _label, _val, _icon in [
+            (_sb1, "Short",  "Short",  "📝"),
+            (_sb2, "Normal", "Normal", "💬"),
+            (_sb3, "Long",   "Long",   "📚"),
+        ]:
+            if _col.button(
+                f"{_icon} {_label}",
+                key=f"sidebar_style_{_val}",
+                use_container_width=True,
+                type="primary" if _cur_style_sb == _val else "secondary",
+            ):
+                st.session_state.answer_style = _val
+                st.rerun()
 
     st.divider()
 
@@ -1158,23 +1217,8 @@ if _follow_ups and st.session_state.messages:
 # ── Answer style buttons (Short / Long) ─────────────────────────────────────
 if st.session_state.documents:
     _cur_style = st.session_state.get("answer_style", "Normal")
-    _asc1, _asc2, _asc3 = st.columns([1, 1, 4])
-    if _asc1.button(
-        "📝 Short Answer", key="btn_style_short",
-        use_container_width=True,
-        type="primary" if _cur_style == "Short" else "secondary",
-    ):
-        st.session_state.answer_style = "Normal" if _cur_style == "Short" else "Short"
-        st.rerun()
-    if _asc2.button(
-        "📚 Long Answer", key="btn_style_long",
-        use_container_width=True,
-        type="primary" if _cur_style == "Long" else "secondary",
-    ):
-        st.session_state.answer_style = "Normal" if _cur_style == "Long" else "Long"
-        st.rerun()
     if _cur_style != "Normal":
-        _asc3.caption(f"✅ **{_cur_style} Answer** mode active · click the button again to reset")
+        st.caption(f"✅ **{_cur_style} Answer** mode · change in ⚙️ Settings → Answer length")
 
 _placeholder = (
     "Ask a question about your documents…"
