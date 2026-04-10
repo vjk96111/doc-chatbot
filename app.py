@@ -782,7 +782,8 @@ def _handle_question(question: str, model_override: str = None, answer_style: st
                 include_followups=True,
                 chat_history=recent_history if recent_history else None,
                 answer_style=_style,
-                comprehensive=_is_comprehensive_query(search_query),
+                # comprehensive=True ONLY for TOC queries — not for "list all X" queries
+                comprehensive=_is_toc_query(search_query),
             )
             t_llm = time.time() - t1
 
