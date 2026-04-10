@@ -10,6 +10,24 @@ from typing import List, Dict, Optional
 
 import numpy as np
 
+# Module-level model cache — loaded once per process, reused forever
+_EMBED_MODEL = None
+_EMBED_MODEL_NAME = "all-MiniLM-L6-v2"
+
+
+def get_embed_model():
+    """Return the shared embedding model, loading it once on first call."""
+    global _EMBED_MODEL
+    if _EMBED_MODEL is None:
+        try:
+            from sentence_transformers import SentenceTransformer
+        except ImportError as exc:
+            raise ImportError(
+                "sentence-transformers is required. Run: pip install sentence-transformers"
+            ) from exc
+        _EMBED_MODEL = SentenceTransformer(_EMBED_MODEL_NAME)
+    return _EMBED_MODEL
+
 
 class VectorStore:
     """
@@ -31,7 +49,6 @@ class VectorStore:
         self._index = None          # FAISS index or numpy array
         self._dimension: Optional[int] = None
         self._use_faiss: Optional[bool] = None  # determined on first build
-        self._embed_model = None    # sentence-transformers model (lazy load)
 
     # ─────────────────────────────── internal ────────────────────────────────
 
@@ -45,16 +62,8 @@ class VectorStore:
         return self._use_faiss
 
     def _get_embed_model(self):
-        """Lazy-load the sentence-transformers model (downloads once, cached)."""
-        if self._embed_model is None:
-            try:
-                from sentence_transformers import SentenceTransformer
-            except ImportError as exc:
-                raise ImportError(
-                    "sentence-transformers is required. Run: pip install sentence-transformers"
-                ) from exc
-            self._embed_model = SentenceTransformer(self._EMBED_MODEL_NAME)
-        return self._embed_model
+        """Return the shared module-level model (loaded once, reused)."""
+        return get_embed_model()
 
     def _embed_texts(self, texts: List[str]) -> List[List[float]]:
         """Generate embeddings locally using sentence-transformers."""
