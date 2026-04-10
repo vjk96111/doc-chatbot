@@ -15,7 +15,6 @@ from utils.vector_store import VectorStore, get_embed_model
 from utils.llm_handler import (
     get_answer,
     get_document_summary,
-    get_follow_up_questions,
     get_highlight,
     keyword_search,
 )
@@ -134,7 +133,7 @@ def _init_state() -> None:
         "model":         "llama-3.1-8b-instant",
         "language":      "English",
         "dark_mode":     False,
-        "highlight_on":  True,
+        "highlight_on":  False,
         "bookmarks":     [],
         "feedback":      {},
         "search_mode":   "Semantic",
@@ -254,14 +253,15 @@ def _handle_question(question: str) -> None:
                 chunks = st.session_state.vector_store.search(question, st.session_state.api_key, top_k=3)
             t_search = time.time() - t0
 
-        # Answer
+        # Answer — follow-up questions come back in the same call, no extra delay
         with st.spinner("💬 Generating answer…"):
             t1 = time.time()
-            answer = get_answer(
+            answer, follow_ups = get_answer(
                 question, chunks,
                 st.session_state.api_key,
                 st.session_state.model,
                 st.session_state.language,
+                include_followups=True,
             )
             t_llm = time.time() - t1
 
@@ -317,13 +317,7 @@ def _handle_question(question: str) -> None:
             st.session_state["_retry_q"] = question
             st.rerun()
 
-        # Follow-up questions
-        with st.spinner("💡 Generating follow-up questions…"):
-            follow_ups = get_follow_up_questions(
-                question, answer,
-                st.session_state.api_key, st.session_state.model,
-                st.session_state.language,
-            )
+        # Follow-up questions (already generated in the answer call — zero extra delay)
         if follow_ups:
             st.markdown("**💡 Follow-up questions:**")
             fu_cols = st.columns(len(follow_ups))
@@ -426,7 +420,7 @@ with st.sidebar:
 
         st.session_state.model = st.selectbox(
             "Model",
-            options=["llama-3.1-8b-instant", "llama-3.3-70b-versatile", "mixtral-8x7b-32768"],
+            options=["llama-3.1-8b-instant", "llama-3.3-70b-versatile"],
             index=0,
             help="8b instant = fastest ⚡  |  70b = best quality",
         )
