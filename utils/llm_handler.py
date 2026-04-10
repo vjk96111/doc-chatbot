@@ -23,6 +23,13 @@ _MAX_PROMPT_CHARS = 80_000
 # Separator used to split answer from follow-up questions in combined response
 _FU_SEP = "---FU---"
 
+# Per-request answer-style instructions injected into the user prompt
+_STYLE_INSTRUCTIONS: Dict[str, str] = {
+    "Short":  " Keep your answer SHORT and CONCISE — 2–4 sentences maximum, core point only.",
+    "Normal": "",
+    "Long":   " Give a DETAILED and COMPREHENSIVE answer — cover all relevant aspects thoroughly with examples from the document.",
+}
+
 # ─────────────────────────────────── prompts ─────────────────────────────────
 
 _SYSTEM_PROMPT = (
@@ -60,7 +67,13 @@ _SUMMARY_PROMPT_TEMPLATE = (
 
 # ─────────────────────────────────── helpers ─────────────────────────────────
 
-def _build_qa_prompt(question: str, chunks: List[Dict], language: str = "English") -> str:
+def _build_qa_prompt(
+    question: str,
+    chunks: List[Dict],
+    language: str = "English",
+    style: str = "Normal",
+    include_fu: bool = False,
+) -> str:
     if not chunks:
         return (
             f"The user asked: {question}\n\n"
@@ -78,10 +91,19 @@ def _build_qa_prompt(question: str, chunks: List[Dict], language: str = "English
 
     context = "\n\n" + ("─" * 60) + "\n\n".join(context_blocks)
     lang_instruction = f"\n\nIMPORTANT: Respond in {language}." if language != "English" else ""
+    style_instruction = _STYLE_INSTRUCTIONS.get(style, "")
+    # Embed the FU instruction directly in user prompt for better model compliance
+    fu_instruction = (
+        "\n\nAfter your answer, output a single line containing exactly '---FU---', "
+        "then write exactly 3 short follow-up questions numbered 1. 2. 3. "
+        "(each under 12 words). Do not skip the '---FU---' line."
+        if include_fu else ""
+    )
     prompt = (
         f"RETRIEVED CONTEXT FROM DOCUMENTS:\n{context}\n\n"
         f"USER QUESTION: {question}\n\n"
-        f"Answer the question based on the context above and cite sources.{lang_instruction}"
+        f"Answer the question based on the context above and cite sources."
+        f"{style_instruction}{lang_instruction}{fu_instruction}"
     )
     return prompt[:_MAX_PROMPT_CHARS]
 
@@ -131,18 +153,30 @@ def _call_with_retry(client: Groq, model_name: str, messages: list, temperature:
 def _parse_followups(raw: str) -> tuple:
     """
     Split a combined answer+follow-up response on the _FU_SEP separator.
+    Handles markdown-wrapped separators (e.g. **---FU---**).
     Returns (answer_text, [follow_up_1, follow_up_2, follow_up_3]).
     """
-    if _FU_SEP not in raw:
+    # Normalize common markdown variations the model might emit
+    cleaned = (
+        raw
+        .replace("**---FU---**", "---FU---")
+        .replace("`---FU---`", "---FU---")
+        .replace("--- FU ---", "---FU---")
+        .replace("--FU--", "---FU---")
+    )
+
+    if "---FU---" not in cleaned:
         return raw.strip(), []
-    parts = raw.split(_FU_SEP, 1)
+
+    parts = cleaned.split("---FU---", 1)
     answer = parts[0].strip()
     follow_ups: List[str] = []
     for line in parts[1].strip().splitlines():
         line = line.strip()
+        # Accept lines starting with a digit followed by . or )
         if line and line[0].isdigit():
             text = line.split(".", 1)[-1].strip().lstrip(")").strip()
-            if text:
+            if text and len(text) > 4:   # skip very short noise
                 follow_ups.append(text)
     return answer, follow_ups[:3]
 
@@ -151,18 +185,24 @@ def get_answer(
     question: str,
     chunks: List[Dict],
     api_key: str,
-    model_name: str = "llama-3.1-8b-instant",
+    model_name: str = "openai/gpt-oss-120b",
     language: str = "English",
     include_followups: bool = True,
     chat_history: List[Dict] = None,
+    answer_style: str = "Normal",
 ) -> tuple:
     """
-    Returns (answer_text, follow_up_questions_list).
-    chat_history: list of {role, content} dicts from prior turns (not current question).
+    Returns (answer_text, follow_up_questions_list, actual_model_used).
+    answer_style: 'Short', 'Normal', or 'Long'.
     Follow-up questions are embedded in the same LLM call — no extra API request.
     """
     client = _groq_client(api_key)
-    prompt = _build_qa_prompt(question, chunks, language)
+    # Embed FU instruction in user prompt (more reliable cross-model compliance)
+    prompt = _build_qa_prompt(
+        question, chunks, language,
+        style=answer_style, include_fu=include_followups,
+    )
+    # System prompt also carries the FU instruction as reinforcement
     system = _SYSTEM_PROMPT_WITH_FU if include_followups else _SYSTEM_PROMPT
 
     # Build message list: system + prior conversation + current question
@@ -171,12 +211,15 @@ def get_answer(
         messages.extend(chat_history)
     messages.append({"role": "user", "content": prompt})
 
+    # Long answers may need more tokens
+    _max_tok = 512 if answer_style == "Short" else (3000 if answer_style == "Long" else 2048)
+
     raw, actual_model = _call_with_retry(
         client,
         model_name,
         messages=messages,
         temperature=0.2,
-        max_tokens=2048,
+        max_tokens=_max_tok,
     )
     if include_followups:
         answer, follow_ups = _parse_followups(raw)
