@@ -1,7 +1,7 @@
 """
 llm_handler.py
-Handles all calls to Groq: Q&A over retrieved context and
-one-shot document summarisation.
+Handles all calls to Groq: Q&A, summarisation, follow-up questions,
+highlight extraction, and language-aware responses.
 """
 
 import time
@@ -11,8 +11,8 @@ from groq import Groq, RateLimitError, BadRequestError
 
 # Fallback model order — all have large context windows (128k+)
 _FALLBACK_MODELS = [
-    "llama-3.3-70b-versatile",
     "llama-3.1-8b-instant",
+    "llama-3.3-70b-versatile",
 ]
 
 # Safe character limit per prompt (~100k chars ≈ 25k tokens, well within 128k window)
@@ -30,7 +30,8 @@ _SYSTEM_PROMPT = (
     "acknowledge it — the image will be displayed automatically in the chat.\n"
     "- If the answer is genuinely not in the context, say so clearly — "
     "do NOT hallucinate facts.\n"
-    "- Be concise but complete."
+    "- Be concise but complete.\n"
+    "- If the user specifies a language, respond entirely in that language."
 )
 
 _SUMMARY_PROMPT_TEMPLATE = (
@@ -47,7 +48,7 @@ _SUMMARY_PROMPT_TEMPLATE = (
 
 # ─────────────────────────────────── helpers ─────────────────────────────────
 
-def _build_qa_prompt(question: str, chunks: List[Dict]) -> str:
+def _build_qa_prompt(question: str, chunks: List[Dict], language: str = "English") -> str:
     if not chunks:
         return (
             f"The user asked: {question}\n\n"
@@ -64,12 +65,12 @@ def _build_qa_prompt(question: str, chunks: List[Dict]) -> str:
         )
 
     context = "\n\n" + ("─" * 60) + "\n\n".join(context_blocks)
+    lang_instruction = f"\n\nIMPORTANT: Respond in {language}." if language != "English" else ""
     prompt = (
         f"RETRIEVED CONTEXT FROM DOCUMENTS:\n{context}\n\n"
         f"USER QUESTION: {question}\n\n"
-        "Answer the question based on the context above and cite sources."
+        f"Answer the question based on the context above and cite sources.{lang_instruction}"
     )
-    # Truncate to safe limit to avoid BadRequestError
     return prompt[:_MAX_PROMPT_CHARS]
 
 
@@ -123,10 +124,11 @@ def get_answer(
     question: str,
     chunks: List[Dict],
     api_key: str,
-    model_name: str = "llama-3.3-70b-versatile",
+    model_name: str = "llama-3.1-8b-instant",
+    language: str = "English",
 ) -> str:
     client = _groq_client(api_key)
-    prompt = _build_qa_prompt(question, chunks)
+    prompt = _build_qa_prompt(question, chunks, language)
     return _call_with_retry(
         client,
         model_name,
@@ -143,7 +145,7 @@ def get_document_summary(
     full_text: str,
     doc_name: str,
     api_key: str,
-    model_name: str = "llama-3.3-70b-versatile",
+    model_name: str = "llama-3.1-8b-instant",
 ) -> str:
     """
     Generate a structured summary of an entire document.
@@ -167,3 +169,72 @@ def get_document_summary(
         temperature=0.3,
         max_tokens=1024,
     )
+
+
+def get_follow_up_questions(
+    question: str,
+    answer: str,
+    api_key: str,
+    model_name: str = "llama-3.1-8b-instant",
+    language: str = "English",
+) -> List[str]:
+    """Generate 3 follow-up questions based on the Q&A exchange."""
+    lang_note = f" Write them in {language}." if language != "English" else ""
+    prompt = (
+        f"Based on this Q&A exchange, suggest exactly 3 short follow-up questions "
+        f"a user might ask next about the document.{lang_note}\n\n"
+        f"Q: {question}\nA: {answer[:1000]}\n\n"
+        "Return ONLY a numbered list like:\n1. ...\n2. ...\n3. ..."
+    )
+    client = _groq_client(api_key)
+    raw = _call_with_retry(
+        client, model_name,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.7, max_tokens=200,
+    )
+    questions: List[str] = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if line and line[0].isdigit():
+            # Strip leading "1. " etc.
+            text = line.split(".", 1)[-1].strip().lstrip(")").strip()
+            if text:
+                questions.append(text)
+    return questions[:3]
+
+
+def get_highlight(
+    question: str,
+    chunks: List[Dict],
+    api_key: str,
+    model_name: str = "llama-3.1-8b-instant",
+) -> str:
+    """Extract the single most relevant sentence from the chunks for the question."""
+    if not chunks:
+        return ""
+    combined = " | ".join(c["text"][:400] for c in chunks[:3])
+    prompt = (
+        f"From the text below, copy the single most relevant sentence that "
+        f"directly answers: '{question}'\n\nTEXT: {combined}\n\n"
+        "Return ONLY the exact sentence, nothing else."
+    )
+    client = _groq_client(api_key)
+    result = _call_with_retry(
+        client, model_name,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.0, max_tokens=150,
+    )
+    return result.strip().strip('"')
+
+
+def keyword_search(query: str, chunks: List[Dict], top_k: int = 5) -> List[Dict]:
+    """Pure keyword search — returns chunks containing any word from the query."""
+    query_words = set(query.lower().split())
+    scored: List[tuple] = []
+    for chunk in chunks:
+        text_lower = chunk["text"].lower()
+        hits = sum(1 for w in query_words if w in text_lower)
+        if hits:
+            scored.append((hits, chunk))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [c for _, c in scored[:top_k]]
