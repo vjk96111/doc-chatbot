@@ -20,6 +20,11 @@ faiss-cpu>=1.7.4
 PyMuPDF>=1.23.0          # PDF text + image extraction
 python-docx>=1.1.0       # Word (.docx) text + image extraction
 
+# pytesseract enables OCR fallback for scanned / image-only PDFs where PyMuPDF
+# finds no selectable text (e.g. Fujitsu PaperStream, Adobe scan-to-PDF).
+# Requires the Tesseract binary — installed via packages.txt on Streamlit Cloud.
+pytesseract>=0.3.10
+
 # ── Numerics / Image handling ─────────────────────────────────────────────────
 numpy>=1.24.0
 Pillow>=10.0.0
