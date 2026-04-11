@@ -37,7 +37,9 @@ st.set_page_config(
 )
 
 # Embedding model cached across all sessions
-@st.cache_resource(show_spinner="⚙️ Loading AI model (one-time)…")
+# Loaded BEFORE the login gate so it warms up while the user types credentials.
+# @st.cache_resource means it only runs once per server process — never again.
+@st.cache_resource(show_spinner=False)
 def _load_embed_model():
     return get_embed_model()
 
@@ -494,6 +496,10 @@ def _get_css(dark: bool) -> str:
 
 
 # LOGIN GATE
+# Kick off model loading BEFORE the login check so it warms up in background
+# while the user is on the login page. By the time they sign in, it's ready.
+_load_embed_model()
+
 def _check_login() -> bool:
     users: Dict[str, str] = {}
     try:
@@ -581,7 +587,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 st.markdown(_get_css(st.session_state.dark_mode), unsafe_allow_html=True)
-_load_embed_model()
+# Note: _load_embed_model() was already called before _check_login() — no-op here (cached)
 
 
 # HELPERS
