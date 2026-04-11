@@ -708,16 +708,16 @@ def _resolve_search_query(question: str) -> str:
 
 
 # Patterns that indicate user wants the document STRUCTURE (TOC / section overview)
+# NOTE: "all topics", "all sections" etc. are intentionally NOT here — they are
+# handled by _is_list_all_query which scans actual document text rather than
+# returning only chunk metadata (page numbers), which is useless for PDFs.
 _TOC_PATTERNS = [
-    "all contents", "all sections", "all chapters", "all headings", "all heading",
-    "all topics", "all parts", "table of contents", "toc",
+    "all contents", "all parts", "table of contents", "toc",
     "what does this document", "what is in this document", "what is in the document",
     "what does the document contain", "what does the document cover",
     "entire document", "full document", "whole document",
     "full overview", "complete overview", "overview of the document",
     "overview of this document", "everything in", "everything covered",
-    "what topics", "what subjects", "what areas", "what chapters",
-    "all the sections", "all the topics", "list contents", "list sections",
     "contents of this document", "contents of the document",
 ]
 
@@ -730,6 +730,10 @@ _LIST_ALL_PATTERNS = [
     "can you list", "could you list", "please list",
     "enumerate all", "enumerate every",
     "names of all", "names of the",
+    # structural queries that need actual content, not just page metadata
+    "all topics", "all sections", "all chapters", "all headings", "all heading",
+    "what topics", "what subjects", "what areas", "what chapters",
+    "all the sections", "all the topics", "list sections",
 ]
 
 def _is_toc_query(question: str) -> bool:
@@ -764,17 +768,33 @@ def _extract_list_target(question: str) -> str:
     meaningful = [w for w in words if w not in _LIST_ALL_STOPWORDS and len(w) > 2]
     return " ".join(meaningful[-3:]) if meaningful else ""   # last 1-3 content words
 
+# Generic meta-nouns that mean "everything in the document" — scanning for
+# these keywords in chunk text would be useless, so we return ALL chunks instead.
+_META_NOUNS = {
+    "topics", "topic", "questions", "question", "sections", "section",
+    "chapters", "chapter", "headings", "heading", "parts", "part",
+    "subjects", "subject", "areas", "area", "items", "item",
+    "contents", "content",
+}
+
 def _scan_all_chunks_for(noun: str, all_chunks: list) -> list:
     """
     Return ALL chunks that contain any word from *noun*.
     Ordered: chunks whose section/source name contains the noun first,
     then other containing chunks — so the most relevant pages come first.
     Prompt cap in llm_handler (80k chars) prevents token blowout.
+
+    Special case: if the noun is a generic meta-word (topics, sections, chapters…)
+    the content is distributed across ALL chunks, so we return everything.
     """
     if not noun:
         return all_chunks
     words = [w for w in noun.split() if len(w) > 2]
     if not words:
+        return all_chunks
+
+    # If every meaningful word is a generic meta-noun, scan the whole document
+    if all(w in _META_NOUNS for w in words):
         return all_chunks
 
     primary, secondary = [], []
@@ -788,7 +808,10 @@ def _scan_all_chunks_for(noun: str, all_chunks: list) -> list:
         elif in_text:
             secondary.append(c)
 
-    return primary + secondary
+    # Fallback: if keyword search returns < 3 chunks, the noun may not appear
+    # verbatim in the text — return all chunks so nothing is missed.
+    result = primary + secondary
+    return result if len(result) >= 3 else all_chunks
 
 def _is_comprehensive_query(question: str) -> bool:
     """Return True if the question is a TOC or targeted full-list query."""
