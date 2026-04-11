@@ -25,6 +25,7 @@ from utils.llm_handler import (
     get_document_summary,
     get_highlight,
     keyword_search,
+    probe_key_limits,
 )
 
 
@@ -587,6 +588,8 @@ def _init_state() -> None:
         "feedback":      {},
         "search_mode":   "Semantic",
         "_follow_ups":   [],   # follow-up questions from last answer
+        # Per-session token usage: {key_index: {model: {"prompt": int, "completion": int, "total": int}}}
+        "api_usage":     {},
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -935,6 +938,16 @@ def _handle_question(question: str, model_override: str = None, answer_style: st
             chunks = _deduplicate_chunks(chunks)
             t_search = time.time() - t0
 
+        # Usage callback: accumulates per-key per-model token counts in session state
+        def _on_usage(usage_dict: dict, model_name: str) -> None:
+            store = st.session_state.setdefault("api_usage", {})
+            ki = usage_dict.get("key_index", 0)
+            key_store = store.setdefault(ki, {})
+            m_store = key_store.setdefault(model_name, {"prompt": 0, "completion": 0, "total": 0})
+            m_store["prompt"]     += usage_dict.get("prompt_tokens", 0)
+            m_store["completion"] += usage_dict.get("completion_tokens", 0)
+            m_store["total"]      += usage_dict.get("total_tokens", 0)
+
         # Answer — follow-up questions come back in the same call, no extra delay
         with st.spinner("💬 Generating answer…"):
             t1 = time.time()
@@ -950,6 +963,7 @@ def _handle_question(question: str, model_override: str = None, answer_style: st
                 comprehensive=_is_toc_query(search_query),
                 list_all=_is_list_all_query(search_query),
                 extra_keys=st.session_state.get("extra_api_keys") or None,
+                usage_callback=_on_usage,
             )
             t_llm = time.time() - t1
 
@@ -1176,6 +1190,88 @@ with st.sidebar:
                 st.session_state.extra_api_keys = _new_extras
             if _new_extras:
                 st.caption(f"✅ {len(_new_extras)} backup key(s) ready")
+
+        # ── API Usage / Rate Limit Dashboard ──────────────────────────────
+        st.markdown("#### 📊 API Usage")
+        _all_keys = [st.session_state.api_key] + (st.session_state.get("extra_api_keys") or [])
+        _all_keys = [k for k in _all_keys if k]   # remove blanks
+
+        # Session token usage (accumulated from real calls this session)
+        _session_usage = st.session_state.get("api_usage", {})
+        if _session_usage:
+            with st.expander("🪙 Session token usage", expanded=False):
+                for ki, models_data in sorted(_session_usage.items()):
+                    key_label = "Primary key" if ki == 0 else f"Backup key #{ki}"
+                    st.markdown(f"**{key_label}**")
+                    for model_name, counts in sorted(models_data.items()):
+                        short_model = model_name.split("/")[-1]
+                        st.caption(
+                            f"`{short_model}` — "
+                            f"↑ {counts['prompt']:,} prompt  "
+                            f"↓ {counts['completion']:,} completion  "
+                            f"= **{counts['total']:,} total tokens**"
+                        )
+        else:
+            st.caption("No API calls made yet this session.")
+
+        # Live rate-limit probe button
+        if _all_keys:
+            if st.button("🔍 Check live rate limits", use_container_width=True,
+                         help="Makes a 1-token probe call per key × model to read Groq's "
+                              "rate-limit headers (requests/tokens remaining this minute)."):
+                _probe_models = [
+                    "meta-llama/llama-4-scout-17b-16e-instruct",
+                    "openai/gpt-oss-20b",
+                    "openai/gpt-oss-120b",
+                    "llama-3.3-70b-versatile",
+                    "llama-3.1-8b-instant",
+                ]
+                with st.spinner("Probing Groq rate limits…"):
+                    _probe_results = probe_key_limits(_all_keys, _probe_models)
+                st.session_state["_probe_results"] = _probe_results
+
+        _probe_results = st.session_state.get("_probe_results", [])
+        if _probe_results:
+            # Group by key_index for a clean display
+            _by_key: dict = {}
+            for r in _probe_results:
+                _by_key.setdefault(r["key_index"], []).append(r)
+            for ki, rows in sorted(_by_key.items()):
+                key_label = "Primary key" if ki == 0 else f"Backup key #{ki}"
+                key_preview = rows[0]["key_preview"]
+                with st.expander(f"🔑 {key_label}  `{key_preview}`", expanded=(ki == 0)):
+                    for r in rows:
+                        short_model = r["model"].split("/")[-1]
+                        if r.get("error"):
+                            st.error(f"`{short_model}` — ⚠️ {r['error']}")
+                            continue
+                        # Requests bar
+                        req_pct = r.get("req_used_pct")
+                        req_rem = r.get("req_remaining")
+                        req_lim = r.get("req_limit")
+                        req_rst = r.get("req_reset", "?")
+                        # Tokens bar
+                        tok_pct = r.get("tok_used_pct")
+                        tok_rem = r.get("tok_remaining")
+                        tok_lim = r.get("tok_limit")
+                        tok_rst = r.get("tok_reset", "?")
+                        st.markdown(f"**`{short_model}`**")
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.caption("Requests / min")
+                            if req_pct is not None:
+                                st.progress(min(req_pct / 100, 1.0))
+                                st.caption(f"{req_rem:,} / {req_lim:,} remaining  ·  resets {req_rst}")
+                            else:
+                                st.caption("n/a")
+                        with col2:
+                            st.caption("Tokens / min")
+                            if tok_pct is not None:
+                                st.progress(min(tok_pct / 100, 1.0))
+                                st.caption(f"{tok_rem:,} / {tok_lim:,} remaining  ·  resets {tok_rst}")
+                            else:
+                                st.caption("n/a")
+        # ──────────────────────────────────────────────────────────────────
 
         # Available Groq models — model ID → friendly label
         _MODEL_IDS = [
