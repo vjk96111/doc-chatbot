@@ -12,8 +12,10 @@ from typing import Dict, List
 
 # ─────────────────────────────────── helpers ─────────────────────────────────
 
-def _chunk_text(text: str, chunk_size: int = 400, overlap: int = 50) -> List[str]:
-    """Split text into overlapping word-based chunks."""
+def _chunk_text(text: str, chunk_size: int = 400, overlap: int = 100) -> List[str]:
+    """Split text into overlapping word-based chunks.
+    Default overlap=100 words (≈ 500 chars) ensures ≥ 150-char overlap across all content.
+    """
     words = text.split()
     if len(words) <= chunk_size:
         return [text]
@@ -144,44 +146,73 @@ def extract_from_docx(file_bytes: bytes, doc_name: str = "") -> Dict:
 
     doc = Document(io.BytesIO(file_bytes))
 
-    # ── Build sections from headings ──────────────────────────────────────────
+    # ── Build sections walking body in document order (paragraphs + tables) ──
+    # doc.paragraphs silently skips table cells, so we walk the XML body directly.
     sections: List[Dict] = []       # [{"title", "text", "section_num"}]
     current_title = "Introduction"
     current_lines: List[str] = []
     section_num = 1
 
-    for para in doc.paragraphs:
-        text = para.text.strip()
-        if not text:
-            continue
-        is_heading = para.style.name.startswith("Heading")
-        if is_heading and current_lines:
-            sections.append(
-                {
-                    "title": current_title,
-                    "text": "\n".join(current_lines),
-                    "section_num": section_num,
-                }
-            )
-            section_num += 1
-            current_title = text
-            current_lines = []
-        else:
-            current_lines.append(text)
+    _W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 
-    if current_lines:
-        sections.append(
-            {
-                "title": current_title,
-                "text": "\n".join(current_lines),
+    def _flush():
+        nonlocal section_num
+        if current_lines:
+            sections.append({
+                "title":      current_title,
+                "text":       "\n".join(current_lines),
                 "section_num": section_num,
-            }
-        )
+            })
+            section_num += 1
 
-    # Fallback: no sections found
+    for child in doc.element.body:
+        local = child.tag.split("}")[-1] if "}" in child.tag else child.tag
+
+        if local == "p":
+            # Collect all run text in paragraph order
+            para_text = "".join(
+                n.text or "" for n in child.iter(f"{{{_W}}}t")
+            ).strip()
+            if not para_text:
+                continue
+            # Check heading style
+            pStyle = child.find(f".//{{{_W}}}pStyle")
+            style_val = (pStyle.get(f"{{{_W}}}val") or "") if pStyle is not None else ""
+            is_heading = style_val.lower().startswith("heading")
+            if is_heading:
+                _flush()
+                current_title  = para_text
+                current_lines  = []
+            else:
+                current_lines.append(para_text)
+
+        elif local == "tbl":
+            # Extract table rows as pipe-separated lines, injected into current section
+            for tr in child.iter(f"{{{_W}}}tr"):
+                cell_texts = []
+                for tc in tr.iter(f"{{{_W}}}tc"):
+                    cell_str = "".join(
+                        n.text or "" for n in tc.iter(f"{{{_W}}}t")
+                    ).strip()
+                    if cell_str:
+                        cell_texts.append(cell_str)
+                if cell_texts:
+                    current_lines.append(" | ".join(cell_texts))
+
+    _flush()   # flush final section
+
+    # Fallback: nothing extracted (unusual — all text was blank)
     if not sections:
-        full = "\n".join(p.text.strip() for p in doc.paragraphs if p.text.strip())
-        sections = [{"title": "Document", "text": full, "section_num": 1}]
+        lines = []
+        for para in doc.paragraphs:
+            if para.text.strip():
+                lines.append(para.text.strip())
+        for table in doc.tables:
+            for row in table.rows:
+                row_text = " | ".join(c.text.strip() for c in row.cells if c.text.strip())
+                if row_text:
+                    lines.append(row_text)
+        sections = [{"title": "Document", "text": "\n".join(lines), "section_num": 1}]
 
     total_sections = len(sections)
 
