@@ -8,7 +8,15 @@ import re
 import time
 from typing import List, Dict
 
-from groq import Groq, RateLimitError, BadRequestError
+from groq import Groq, RateLimitError
+try:
+    from groq import BadRequestError
+except ImportError:
+    # Older groq versions expose it under a different path
+    try:
+        from groq._exceptions import BadRequestError
+    except ImportError:
+        BadRequestError = Exception  # fallback: never silently swallow, but don't crash
 
 # Fallback model order — fast 8b is always the last-resort safety net
 _FALLBACK_MODELS = [
@@ -204,6 +212,10 @@ def probe_key_limits(api_keys: List[str], models: List[str]) -> List[Dict]:
         }
         try:
             client = Groq(api_key=api_key)
+            # with_raw_response is available in groq>=0.11.0; fall back gracefully
+            if not hasattr(client.chat.completions, "with_raw_response"):
+                result["error"] = "groq version too old for rate-limit headers (upgrade to >=0.11.0)"
+                return result
             raw = client.chat.completions.with_raw_response.create(
                 model=model,
                 messages=_probe_msg,
