@@ -4,6 +4,7 @@ Handles all calls to Groq: Q&A, summarisation, follow-up questions,
 highlight extraction, and language-aware responses.
 """
 
+import re
 import time
 from typing import List, Dict
 
@@ -150,61 +151,85 @@ def _groq_client(api_key: str) -> Groq:
     return Groq(api_key=api_key)
 
 
-# ─────────────────────────────────── public API ──────────────────────────────
-
-def _call_with_retry(client: Groq, model_name: str, messages: list, temperature: float, max_tokens: int) -> tuple:
+def _call_with_retry(
+    client: Groq,
+    model_name: str,
+    messages: list,
+    temperature: float,
+    max_tokens: int,
+    extra_keys: List[str] = None,
+) -> tuple:
     """
     Call Groq with exponential backoff + automatic model fallback on rate limit.
     Tries up to 3 times per model, then falls back to a smaller model.
+    If extra_keys are provided, rotates to the next API key when all models
+    are exhausted on the current key (daily usage limit reached).
+    Returns (content, actual_model_used).
     """
     models_to_try = [model_name] + [m for m in _FALLBACK_MODELS if m != model_name]
+    # Build list of clients to try: primary first, then each extra key
+    clients_to_try = [client] + [Groq(api_key=k) for k in (extra_keys or []) if k]
 
-    for model in models_to_try:
-        for attempt in range(3):
-            try:
-                response = client.chat.completions.create(
-                    model=model,
-                    messages=messages,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                )
-                return response.choices[0].message.content, model  # (content, actual_model)
-            except RateLimitError:
-                if attempt < 2:
-                    wait = 10 * (2 ** attempt)  # 10s, 20s
-                    time.sleep(wait)
-                else:
-                    break  # try next model
-            except BadRequestError:
-                # Model unavailable / deprecated / context error — try next model
-                break
-            except Exception as exc:
-                raise exc
+    for cli in clients_to_try:
+        for model in models_to_try:
+            for attempt in range(3):
+                try:
+                    response = cli.chat.completions.create(
+                        model=model,
+                        messages=messages,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                    )
+                    return response.choices[0].message.content, model
+                except RateLimitError:
+                    if attempt < 2:
+                        wait = 10 * (2 ** attempt)  # 10s, 20s
+                        time.sleep(wait)
+                    else:
+                        break  # try next model on same key
+                except BadRequestError:
+                    break  # model unavailable — try next model
+                except Exception as exc:
+                    raise exc
+        # All models on this key exhausted (rate limited) — loop to next key
 
     return (
-        "⚠️ The AI service is currently rate-limited (too many requests). "
-        "Please wait 30 seconds and try again.",
+        "⚠️ All API keys and models are currently rate-limited. "
+        "Please wait a few minutes or add another Groq API key in ⚙️ Settings.",
         "none",
     )
+
+
+def _strip_think_blocks(text: str) -> str:
+    """Remove <think>…</think> reasoning blocks that Llama 4 / Qwen3 models emit."""
+    return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
 
 
 def _parse_followups(raw: str) -> tuple:
     """
     Split a combined answer+follow-up response on the _FU_SEP separator.
-    Handles markdown-wrapped separators (e.g. **---FU---**).
+    Handles markdown-wrapped separators and <think> blocks from Llama 4/Qwen3.
     Returns (answer_text, [follow_up_1, follow_up_2, follow_up_3]).
     """
-    # Normalize common markdown variations the model might emit
+    # 1. Strip chain-of-thought reasoning blocks (Llama 4 Scout, Qwen3)
+    cleaned = _strip_think_blocks(raw)
+
+    # 2. Normalize every known separator variation the model might emit
     cleaned = (
-        raw
+        cleaned
         .replace("**---FU---**", "---FU---")
         .replace("`---FU---`", "---FU---")
         .replace("--- FU ---", "---FU---")
+        .replace("---fu---", "---FU---")
         .replace("--FU--", "---FU---")
+        .replace("– FU –", "---FU---")
+        .replace("— FU —", "---FU---")
     )
+    # Also catch lines that are ONLY the separator (with surrounding whitespace/dashes)
+    cleaned = re.sub(r"(?m)^\s*-{2,}\s*FU\s*-{2,}\s*$", "---FU---", cleaned)
 
     if "---FU---" not in cleaned:
-        return raw.strip(), []
+        return cleaned.strip(), []
 
     parts = cleaned.split("---FU---", 1)
     answer = parts[0].strip()
@@ -230,11 +255,12 @@ def get_answer(
     answer_style: str = "Normal",
     comprehensive: bool = False,
     list_all: bool = False,
+    extra_keys: List[str] = None,
 ) -> tuple:
     """
     Returns (answer_text, follow_up_questions_list, actual_model_used).
     answer_style: 'Short', 'Normal', or 'Long'.
-    Follow-up questions are embedded in the same LLM call — no extra API request.
+    extra_keys: additional Groq API keys tried in order when primary key hits daily limit.
     """
     client = _groq_client(api_key)
     # Embed FU instruction in user prompt (more reliable cross-model compliance)
@@ -262,7 +288,10 @@ def get_answer(
         messages=messages,
         temperature=0.2,
         max_tokens=_max_tok,
+        extra_keys=extra_keys,
     )
+    # Strip <think> blocks before any further processing (Llama 4 Scout, Qwen3)
+    raw = _strip_think_blocks(raw)
     if include_followups:
         answer, follow_ups = _parse_followups(raw)
         return answer, follow_ups, actual_model
