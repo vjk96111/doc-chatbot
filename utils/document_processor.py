@@ -37,6 +37,37 @@ def _is_useful_image(img_bytes: bytes, ext: str) -> bool:
     }
 
 
+def _ocr_page(page) -> str:
+    """
+    Render a PyMuPDF page as a greyscale image and extract text via Tesseract OCR.
+
+    Called automatically when page.get_text() returns empty — handles scanned
+    PDFs where the text layer is missing or uses a non-standard font encoding
+    (e.g. Fujitsu PaperStream Capture, Adobe Acrobat scan-to-PDF, etc.).
+
+    Returns empty string if pytesseract or Tesseract is not installed.
+    """
+    try:
+        import pytesseract
+        from PIL import Image as _PilImage
+        import fitz as _fitz
+
+        # Render at 150 DPI (scale factor ≈ 2.08 at PDF 72-DPI base).
+        # Greyscale is faster for OCR and avoids colour-noise artefacts.
+        mat = _fitz.Matrix(150 / 72, 150 / 72)
+        pix = page.get_pixmap(matrix=mat, colorspace=_fitz.csGRAY)
+        img = _PilImage.frombytes("L", [pix.width, pix.height], pix.samples)
+
+        # --psm 3 = Fully automatic page segmentation (best for mixed layouts)
+        return pytesseract.image_to_string(img, lang="eng", config="--psm 3").strip()
+
+    except ImportError:
+        # pytesseract not installed — caller handles empty return silently
+        return ""
+    except Exception:
+        return ""
+
+
 # ─────────────────────────────────── PDF ─────────────────────────────────────
 
 def extract_from_pdf(file_bytes: bytes, doc_name: str = "") -> Dict:
@@ -61,6 +92,7 @@ def extract_from_pdf(file_bytes: bytes, doc_name: str = "") -> Dict:
 
     all_chunks: List[Dict] = []
     images_by_page: Dict[int, List[Dict]] = {}
+    ocr_pages: int = 0           # pages where OCR fallback was used
 
     for page_idx in range(len(pdf)):
         page = pdf[page_idx]
@@ -68,6 +100,14 @@ def extract_from_pdf(file_bytes: bytes, doc_name: str = "") -> Dict:
 
         # ── text ──────────────────────────────────────────────────────────────
         raw_text = page.get_text("text").strip()
+
+        # If PyMuPDF returns no text (scanned / non-standard font encoding),
+        # fall back to Tesseract OCR rendered from the page image.
+        if not raw_text:
+            raw_text = _ocr_page(page)
+            if raw_text:
+                ocr_pages += 1
+
         if raw_text:
             for sub in _chunk_text(raw_text):
                 all_chunks.append(
@@ -103,7 +143,7 @@ def extract_from_pdf(file_bytes: bytes, doc_name: str = "") -> Dict:
             images_by_page[page_num] = page_imgs
 
     pdf.close()
-    return {"chunks": all_chunks, "images": images_by_page}
+    return {"chunks": all_chunks, "images": images_by_page, "ocr_pages": ocr_pages}
 
 
 # ─────────────────────────────────── DOCX ────────────────────────────────────
