@@ -1430,11 +1430,22 @@ with st.sidebar:
                             st.write("📖 Reading file…")
                             raw = f.read()
                             st.write("✂️ Extracting text and images…")
+
+                            # Progress callback — updates UI every 10 pages
+                            _prog_placeholder = st.empty()
+                            def _pdf_progress(page_num, total, ocr_used):
+                                if page_num % 10 == 0 or page_num == total:
+                                    msg = f"📄 Page {page_num}/{total}"
+                                    if ocr_used:
+                                        msg += f" · 🔍 {ocr_used} OCR pages so far"
+                                    _prog_placeholder.caption(msg)
+
                             result = (
-                                extract_from_pdf(raw, f.name)
+                                extract_from_pdf(raw, f.name, progress_callback=_pdf_progress)
                                 if f.name.lower().endswith(".pdf")
                                 else extract_from_docx(raw, f.name)
                             )
+                            _prog_placeholder.empty()
                             n_chunks = len(result["chunks"])
                             n_imgs   = sum(len(v) for v in result["images"].values())
                             ocr_used = result.get("ocr_pages", 0)
