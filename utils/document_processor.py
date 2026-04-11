@@ -52,9 +52,9 @@ def _ocr_page(page) -> str:
         from PIL import Image as _PilImage
         import fitz as _fitz
 
-        # Render at 150 DPI (scale factor ≈ 2.08 at PDF 72-DPI base).
-        # Greyscale is faster for OCR and avoids colour-noise artefacts.
-        mat = _fitz.Matrix(150 / 72, 150 / 72)
+        # Render at 120 DPI — good quality for printed text, 36% fewer pixels
+        # than 150 DPI, which cuts Tesseract processing time proportionally.
+        mat = _fitz.Matrix(120 / 72, 120 / 72)
         pix = page.get_pixmap(matrix=mat, colorspace=_fitz.csGRAY)
         img = _PilImage.frombytes("L", [pix.width, pix.height], pix.samples)
 
@@ -70,14 +70,23 @@ def _ocr_page(page) -> str:
 
 # ─────────────────────────────────── PDF ─────────────────────────────────────
 
-def extract_from_pdf(file_bytes: bytes, doc_name: str = "") -> Dict:
+def extract_from_pdf(
+    file_bytes: bytes,
+    doc_name: str = "",
+    progress_callback=None,
+) -> Dict:
     """
     Extract text chunks and images from a PDF.
+
+    Args:
+        progress_callback: optional callable(page_num, total_pages, ocr_used)
+            called after each page — use for live progress updates in the UI.
 
     Returns:
         {
           "chunks": [{"text", "page", "source", "doc_name"}, ...],
-          "images": {page_num: [{"data": b64_str, "ext": str, "page": int, "doc_name": str}, ...]}
+          "images": {page_num: [{"data": b64_str, "ext": str, "page": int, "doc_name": str}, ...]},
+          "ocr_pages": int,
         }
     """
     try:
@@ -118,6 +127,12 @@ def extract_from_pdf(file_bytes: bytes, doc_name: str = "") -> Dict:
                         "doc_name": doc_name,
                     }
                 )
+
+        if progress_callback:
+            try:
+                progress_callback(page_num, len(pdf), ocr_pages)
+            except Exception:
+                pass
 
         # ── images ────────────────────────────────────────────────────────────
         page_imgs: List[Dict] = []
