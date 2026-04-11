@@ -783,32 +783,61 @@ _META_NOUNS = {
     "contents", "content",
 }
 
-# How many chars to take from the start of each chunk for the topic scan.
-# 300 chars is enough to capture 1-2 numbered headings per page.
-_TOPIC_SCAN_CHARS = 300
+# Regex patterns for detecting question/section headings anywhere within chunk text.
+# This is needed for scanned PDFs (OCR text layer) where question headings can
+# appear at ANY position within a page chunk — not just at the start.
+import re as _re
+# Matches:  "1. Define business."  /  "12) State the objectives"  /  "Q3. What is..."
+# Permissive: [A-Za-z] handles OCR lowercase misreads; no strict capital requirement.
+_NUMBERED_HEADING_RE = _re.compile(
+    r'(?:^|\n)\s*(?:[Qq]\.?\s*)?\d{1,3}[\.\)]\s+([A-Za-z].{8,130})',
+    _re.MULTILINE,
+)
 
 def _build_topic_scan_chunks(all_chunks: list) -> list:
     """
     For generic 'list all topics/sections/questions' queries:
-    extract only the first _TOPIC_SCAN_CHARS characters of each unique
-    page/section and combine into ONE compact synthetic chunk.
-    The LLM sees all headings without the full answer bodies → 5-10x faster
-    than sending all 80k chars while still giving a correct answer.
+
+    Strategy (two-pass):
+    1. Scan EVERY chunk for numbered headings using regex (e.g. "1. Define...",
+       "12) State the objectives..."). Works correctly for scanned/OCR PDFs where
+       question headings can appear anywhere within a page — not just at the top.
+    2. Fallback: if no numbered headings were found at all (plain narrative doc),
+       take the first 200 chars of each unique page like before.
+
+    Returns ONE compact synthetic chunk so the LLM only sees headings, not full
+    answer bodies — keeps the prompt small and the response fast.
     """
+    heading_lines: list = []
+    seen_headings: set = set()
+    fallback_lines: list = []
     seen_pages: set = set()
-    lines: list = []
+
     for c in all_chunks:
-        page_key = (c.get("doc_name", ""), c.get("source", ""))
-        if page_key in seen_pages:
-            continue
-        seen_pages.add(page_key)
-        snippet = c["text"][:_TOPIC_SCAN_CHARS].replace("\n", " ").strip()
-        if snippet:
-            lines.append(f"[{c.get('doc_name', '?')} | {c.get('source', '')}]  {snippet}")
+        doc = c.get("doc_name", "?")
+        src = c.get("source", "")
+        text = c.get("text", "")
+        label = f"[{doc} | {src}]"
+
+        # ── Pass 1: extract numbered headings from entire chunk text ──────────
+        for m in _NUMBERED_HEADING_RE.finditer(text):
+            heading = m.group(0).strip().replace("\n", " ")
+            if heading not in seen_headings:
+                seen_headings.add(heading)
+                heading_lines.append(f"{label}  {heading}")
+
+        # ── Pass 2 (fallback): first 200 chars per unique page ─────────────
+        page_key = (doc, src)
+        if page_key not in seen_pages:
+            seen_pages.add(page_key)
+            snippet = text[:200].replace("\n", " ").strip()
+            if snippet:
+                fallback_lines.append(f"{label}  {snippet}")
+
+    lines = heading_lines if heading_lines else fallback_lines
     combined = (
-        "DOCUMENT HEADINGS/TOPICS SCAN "
-        "(first snippet of each page — enough to identify all section titles):\n\n"
-        + "\n\n".join(lines)
+        "DOCUMENT TOPICS / QUESTIONS / SECTION HEADINGS:\n\n"
+        + "\n".join(lines)
     )
     return [{"text": combined, "source": "Topics Scan",
              "doc_name": "All Documents", "page": 0}]
