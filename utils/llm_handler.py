@@ -156,6 +156,97 @@ def _groq_client(api_key: str) -> Groq:
     return Groq(api_key=api_key)
 
 
+def probe_key_limits(api_keys: List[str], models: List[str]) -> List[Dict]:
+    """
+    Make a minimal probe call (max_tokens=1) to each (api_key × model) combination
+    and capture Groq's rate-limit response headers.
+
+    Returns a list of dicts, one per (key_index, model):
+      {
+        "key_index":          int,           # 0 = primary, 1+ = backup
+        "key_preview":        str,           # "gsk_...abcd" (masked)
+        "model":              str,
+        "req_limit":          int or None,   # requests per minute
+        "req_remaining":      int or None,
+        "req_reset":          str or None,   # e.g. "58.9s"
+        "tok_limit":          int or None,   # tokens per minute
+        "tok_remaining":      int or None,
+        "tok_reset":          str or None,
+        "req_used_pct":       float or None, # (limit-remaining)/limit * 100
+        "tok_used_pct":       float or None,
+        "error":              str or None,
+      }
+    """
+    import concurrent.futures
+
+    _probe_msg = [{"role": "user", "content": "hi"}]
+
+    def _safe_int(v):
+        try:
+            return int(v) if v is not None else None
+        except (ValueError, TypeError):
+            return None
+
+    def _mask_key(k: str) -> str:
+        if not k or len(k) < 8:
+            return "***"
+        return k[:7] + "…" + k[-4:]
+
+    def _probe_one(key_index: int, api_key: str, model: str) -> Dict:
+        result = {
+            "key_index":    key_index,
+            "key_preview":  _mask_key(api_key),
+            "model":        model,
+            "req_limit":    None, "req_remaining": None, "req_reset": None,
+            "tok_limit":    None, "tok_remaining": None, "tok_reset": None,
+            "req_used_pct": None, "tok_used_pct":  None,
+            "error":        None,
+        }
+        try:
+            client = Groq(api_key=api_key)
+            raw = client.chat.completions.with_raw_response.create(
+                model=model,
+                messages=_probe_msg,
+                max_tokens=1,
+                temperature=0,
+            )
+            h = raw.headers
+            rl   = _safe_int(h.get("x-ratelimit-limit-requests"))
+            rr   = _safe_int(h.get("x-ratelimit-remaining-requests"))
+            tl   = _safe_int(h.get("x-ratelimit-limit-tokens"))
+            tr   = _safe_int(h.get("x-ratelimit-remaining-tokens"))
+            result.update({
+                "req_limit":     rl,
+                "req_remaining": rr,
+                "req_reset":     h.get("x-ratelimit-reset-requests"),
+                "tok_limit":     tl,
+                "tok_remaining": tr,
+                "tok_reset":     h.get("x-ratelimit-reset-tokens"),
+                "req_used_pct":  round((rl - rr) / rl * 100, 1) if rl and rr is not None else None,
+                "tok_used_pct":  round((tl - tr) / tl * 100, 1) if tl and tr is not None else None,
+            })
+        except Exception as exc:
+            result["error"] = str(exc)[:120]
+        return result
+
+    tasks = []
+    for ki, key in enumerate(api_keys):
+        if key:
+            for model in models:
+                tasks.append((ki, key, model))
+
+    results = []
+    # Run probes concurrently (up to 8 at a time) so it completes in ~2s not N*2s
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+        futures = [pool.submit(_probe_one, ki, key, model) for ki, key, model in tasks]
+        for f in concurrent.futures.as_completed(futures):
+            results.append(f.result())
+
+    # Sort by key_index then model name for consistent display
+    results.sort(key=lambda x: (x["key_index"], x["model"]))
+    return results
+
+
 def _call_with_retry(
     client: Groq,
     model_name: str,
@@ -169,13 +260,18 @@ def _call_with_retry(
     Tries up to 3 times per model, then falls back to a smaller model.
     If extra_keys are provided, rotates to the next API key when all models
     are exhausted on the current key (daily usage limit reached).
-    Returns (content, actual_model_used).
+    Returns (content, actual_model_used, usage_dict).
+    usage_dict = {"key_index": int, "prompt_tokens": int, "completion_tokens": int, "total_tokens": int}
     """
     models_to_try = [model_name] + [m for m in _FALLBACK_MODELS if m != model_name]
-    # Build list of clients to try: primary first, then each extra key
-    clients_to_try = [client] + [Groq(api_key=k) for k in (extra_keys or []) if k]
+    # Build list of (key_index, client) to try: primary first, then each extra key
+    clients_to_try = [(0, client)] + [
+        (ki + 1, Groq(api_key=k))
+        for ki, k in enumerate(extra_keys or [])
+        if k
+    ]
 
-    for cli in clients_to_try:
+    for key_index, cli in clients_to_try:
         for model in models_to_try:
             for attempt in range(3):
                 try:
@@ -185,7 +281,14 @@ def _call_with_retry(
                         temperature=temperature,
                         max_tokens=max_tokens,
                     )
-                    return response.choices[0].message.content, model
+                    usage = getattr(response, "usage", None)
+                    usage_dict = {
+                        "key_index":         key_index,
+                        "prompt_tokens":     getattr(usage, "prompt_tokens", 0) or 0,
+                        "completion_tokens": getattr(usage, "completion_tokens", 0) or 0,
+                        "total_tokens":      getattr(usage, "total_tokens", 0) or 0,
+                    }
+                    return response.choices[0].message.content, model, usage_dict
                 except RateLimitError:
                     if attempt < 2:
                         wait = 10 * (2 ** attempt)  # 10s, 20s
@@ -202,6 +305,7 @@ def _call_with_retry(
         "⚠️ All API keys and models are currently rate-limited. "
         "Please wait a few minutes or add another Groq API key in ⚙️ Settings.",
         "none",
+        {"key_index": 0, "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
     )
 
 
@@ -261,11 +365,14 @@ def get_answer(
     comprehensive: bool = False,
     list_all: bool = False,
     extra_keys: List[str] = None,
+    usage_callback=None,   # callable(usage_dict, actual_model) — optional
 ) -> tuple:
     """
     Returns (answer_text, follow_up_questions_list, actual_model_used).
     answer_style: 'Short', 'Normal', or 'Long'.
     extra_keys: additional Groq API keys tried in order when primary key hits daily limit.
+    usage_callback: optional callable(usage_dict, model_name) called after each successful
+                    API call, used to accumulate per-key per-model session token counts.
     """
     client = _groq_client(api_key)
     # Embed FU instruction in user prompt (more reliable cross-model compliance)
@@ -287,7 +394,7 @@ def get_answer(
     # Long answers may need more tokens
     _max_tok = 512 if answer_style == "Short" else (3000 if answer_style == "Long" else 2048)
 
-    raw, actual_model = _call_with_retry(
+    raw, actual_model, usage_dict = _call_with_retry(
         client,
         model_name,
         messages=messages,
@@ -297,6 +404,9 @@ def get_answer(
     )
     # Strip <think> blocks before any further processing (Llama 4 Scout, Qwen3)
     raw = _strip_think_blocks(raw)
+    # Deliver usage stats to the caller via the optional callback
+    if usage_callback:
+        usage_callback(usage_dict, actual_model)
     if include_followups:
         answer, follow_ups = _parse_followups(raw)
         return answer, follow_ups, actual_model
@@ -324,7 +434,7 @@ def get_document_summary(
     client = _groq_client(api_key)
     text = full_text[:20_000] if len(full_text) > 20_000 else full_text
     prompt = _SUMMARY_PROMPT_TEMPLATE.format(doc_name=doc_name, text=text)
-    content, _ = _call_with_retry(
+    content, _, _u = _call_with_retry(
         client,
         model_name,
         messages=[{"role": "user", "content": prompt}],
@@ -350,7 +460,7 @@ def get_highlight(
         "Return ONLY the exact sentence, nothing else."
     )
     client = _groq_client(api_key)
-    result, _ = _call_with_retry(
+    result, _, _u = _call_with_retry(
         client, model_name,
         messages=[{"role": "user", "content": prompt}],
         temperature=0.0, max_tokens=150,
