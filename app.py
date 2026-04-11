@@ -784,14 +784,14 @@ _META_NOUNS = {
 }
 
 # Regex patterns for detecting question/section headings anywhere within chunk text.
-# This is needed for scanned PDFs (OCR text layer) where question headings can
-# appear at ANY position within a page chunk — not just at the start.
-import re as _re
+# IMPORTANT: _chunk_text() removes ALL newlines (splits on whitespace, rejoins with
+# single spaces). So chunk text is always a flat single-line string — (?:^|\n) anchors
+# will NEVER match mid-string. We use (?:^|(?<=\s)) instead: matches at start of
+# string OR when the digit is immediately preceded by a space.
 # Matches:  "1. Define business."  /  "12) State the objectives"  /  "Q3. What is..."
-# Permissive: [A-Za-z] handles OCR lowercase misreads; no strict capital requirement.
+import re as _re
 _NUMBERED_HEADING_RE = _re.compile(
-    r'(?:^|\n)\s*(?:[Qq]\.?\s*)?\d{1,3}[\.\)]\s+([A-Za-z].{8,130})',
-    _re.MULTILINE,
+    r'(?:^|(?<=\s))(?:[Qq]\.?\s*)?\d{1,3}[.)]\s+[A-Za-z].{10,80}',
 )
 
 def _build_topic_scan_chunks(all_chunks: list) -> list:
