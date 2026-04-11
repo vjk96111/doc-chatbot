@@ -135,10 +135,11 @@ def _build_qa_prompt(
         if comprehensive else ""
     )
     list_all_instruction = (
-        "\nINSTRUCTION: The context above contains ALL document chunks that mention "
-        "the requested items. Extract and enumerate EVERY individual item name you find "
-        "across ALL context blocks \u2014 do not summarise, do not skip any. "
-        "Produce a complete numbered or bulleted list."
+        "\nINSTRUCTION: The context above contains document snippets covering the "
+        "full content. Extract and enumerate EVERY individual item name, heading, "
+        "or topic you can identify across ALL context blocks — do not summarise, "
+        "do not skip any. Produce a complete numbered or bulleted list. "
+        "If the context contains section headings or numbered questions, list all of them."
         if list_all else ""
     )
     prompt = (
