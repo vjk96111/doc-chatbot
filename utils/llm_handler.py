@@ -36,14 +36,18 @@ _SYSTEM_PROMPT = (
     "You are DocChat, a precise and helpful assistant that answers questions "
     "strictly based on content retrieved from uploaded documents.\n\n"
     "Rules:\n"
-    "- Answer ONLY from the provided context snippets.\n"
-    "- Always cite the source document name and page/section number.\n"
-    "- If a context snippet mentions a diagram, figure, chart, or table, "
+    "1. Answer ONLY from the provided context snippets — NEVER use general knowledge.\n"
+    "2. If the answer is not present in the context, respond with exactly: "
+    "\"This information is not found in the uploaded document.\"\n"
+    "3. On follow-up questions, always refer back to the previous answer and "
+    "filter or extend it — do NOT start fresh from the full context.\n"
+    "4. When the answer contains multiple items, always use a numbered list or "
+    "bullet points — never write them as a flat paragraph.\n"
+    "5. Always cite the source document name and page/section number wherever possible.\n"
+    "6. If a context snippet mentions a diagram, figure, chart, or table, "
     "acknowledge it — the image will be displayed automatically in the chat.\n"
-    "- If the answer is genuinely not in the context, say so clearly — "
-    "do NOT hallucinate facts.\n"
-    "- Be concise but complete.\n"
-    "- If LANGUAGE appears in the prompt, use ONLY that language for EVERY part "
+    "7. Be concise but complete. Do NOT hallucinate facts.\n"
+    "8. If LANGUAGE appears in the prompt, use ONLY that language for EVERY part "
     "of your response including follow-up questions."
 )
 
@@ -63,13 +67,6 @@ def _make_system_prompt(language: str = "English", include_fu: bool = False) -> 
         if include_fu else ""
     )
     return _SYSTEM_PROMPT + lang_note + fu_note
-
-# Keep for backward compat
-_SYSTEM_PROMPT_WITH_FU = _SYSTEM_PROMPT + (
-    "\n\nAfter your answer, add a line containing only '---FU---', "
-    "then list exactly 3 short follow-up questions the user might ask next, "
-    "numbered 1. 2. 3. Keep each question under 12 words."
-)
 
 _SUMMARY_PROMPT_TEMPLATE = (
     'Provide a structured summary of the document "{doc_name}".\n\n'
@@ -97,8 +94,9 @@ def _build_qa_prompt(
     if not chunks:
         return (
             f"The user asked: {question}\n\n"
-            "No relevant content was found in the uploaded documents. "
-            "Please inform the user politely."
+            "No relevant context was found in the uploaded documents. "
+            "You MUST respond with exactly: "
+            "\"This information is not found in the uploaded document.\""
         )
 
     context_blocks = []
@@ -300,37 +298,6 @@ def get_document_summary(
         max_tokens=1024,
     )
     return content
-
-
-def get_follow_up_questions(
-    question: str,
-    answer: str,
-    api_key: str,
-    model_name: str = "llama-3.1-8b-instant",
-    language: str = "English",
-) -> List[str]:
-    """Standalone follow-up generator (kept for backward compat; prefer include_followups=True in get_answer)."""
-    lang_note = f" Write them in {language}." if language != "English" else ""
-    prompt = (
-        f"Suggest exactly 3 short follow-up questions a user might ask next "
-        f"about the document, based on this Q&A.{lang_note}\n"
-        f"Q: {question}\nA: {answer[:500]}\n\n"
-        "Return ONLY a numbered list: 1. ...\n2. ...\n3. ..."
-    )
-    client = _groq_client(api_key)
-    raw, _ = _call_with_retry(
-        client, model_name,
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.7, max_tokens=150,
-    )
-    questions: List[str] = []
-    for line in raw.splitlines():
-        line = line.strip()
-        if line and line[0].isdigit():
-            text = line.split(".", 1)[-1].strip().lstrip(")").strip()
-            if text:
-                questions.append(text)
-    return questions[:3]
 
 
 def get_highlight(
