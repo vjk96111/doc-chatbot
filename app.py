@@ -769,7 +769,7 @@ def _extract_list_target(question: str) -> str:
     return " ".join(meaningful[-3:]) if meaningful else ""   # last 1-3 content words
 
 # Generic meta-nouns that mean "everything in the document" — scanning for
-# these keywords in chunk text would be useless, so we return ALL chunks instead.
+# these keywords in chunk text would be useless, so we use a compact topic scan.
 _META_NOUNS = {
     "topics", "topic", "questions", "question", "sections", "section",
     "chapters", "chapter", "headings", "heading", "parts", "part",
@@ -777,15 +777,46 @@ _META_NOUNS = {
     "contents", "content",
 }
 
+# How many chars to take from the start of each chunk for the topic scan.
+# 300 chars is enough to capture 1-2 numbered headings per page.
+_TOPIC_SCAN_CHARS = 300
+
+def _build_topic_scan_chunks(all_chunks: list) -> list:
+    """
+    For generic 'list all topics/sections/questions' queries:
+    extract only the first _TOPIC_SCAN_CHARS characters of each unique
+    page/section and combine into ONE compact synthetic chunk.
+    The LLM sees all headings without the full answer bodies → 5-10x faster
+    than sending all 80k chars while still giving a correct answer.
+    """
+    seen_pages: set = set()
+    lines: list = []
+    for c in all_chunks:
+        page_key = (c.get("doc_name", ""), c.get("source", ""))
+        if page_key in seen_pages:
+            continue
+        seen_pages.add(page_key)
+        snippet = c["text"][:_TOPIC_SCAN_CHARS].replace("\n", " ").strip()
+        if snippet:
+            lines.append(f"[{c.get('doc_name', '?')} | {c.get('source', '')}]  {snippet}")
+    combined = (
+        "DOCUMENT HEADINGS/TOPICS SCAN "
+        "(first snippet of each page — enough to identify all section titles):\n\n"
+        + "\n\n".join(lines)
+    )
+    return [{"text": combined, "source": "Topics Scan",
+             "doc_name": "All Documents", "page": 0}]
+
+
 def _scan_all_chunks_for(noun: str, all_chunks: list) -> list:
     """
-    Return ALL chunks that contain any word from *noun*.
+    Return chunks that contain any word from *noun*.
     Ordered: chunks whose section/source name contains the noun first,
     then other containing chunks — so the most relevant pages come first.
     Prompt cap in llm_handler (80k chars) prevents token blowout.
 
     Special case: if the noun is a generic meta-word (topics, sections, chapters…)
-    the content is distributed across ALL chunks, so we return everything.
+    build a compact topic-scan instead of sending all 80k chars — much faster.
     """
     if not noun:
         return all_chunks
@@ -793,9 +824,9 @@ def _scan_all_chunks_for(noun: str, all_chunks: list) -> list:
     if not words:
         return all_chunks
 
-    # If every meaningful word is a generic meta-noun, scan the whole document
+    # Generic meta-noun → compact heading scan (fast, correct)
     if all(w in _META_NOUNS for w in words):
-        return all_chunks
+        return _build_topic_scan_chunks(all_chunks)
 
     primary, secondary = [], []
     for c in all_chunks:
