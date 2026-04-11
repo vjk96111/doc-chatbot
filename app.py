@@ -1191,6 +1191,39 @@ with st.sidebar:
             if _new_extras:
                 st.caption(f"✅ {len(_new_extras)} backup key(s) ready")
 
+            # ── Active key selector ───────────────────────────────────
+            # Build list of all non-empty keys with friendly labels
+            _all_available_keys = (
+                ([st.session_state.api_key] if st.session_state.api_key else []) +
+                [k for k in st.session_state.get("extra_api_keys", []) if k]
+            )
+            if len(_all_available_keys) > 1:
+                st.caption("🔀 **Active key** — pick which key to use for responses")
+                _key_labels = [f"Key {i+1}" for i in range(len(_all_available_keys))]
+                # Determine current active index
+                _active_key = st.session_state.api_key
+                _active_idx = 0
+                if _active_key in _all_available_keys:
+                    _active_idx = _all_available_keys.index(_active_key)
+                _chosen_label = st.radio(
+                    "Active key",
+                    options=_key_labels,
+                    index=_active_idx,
+                    horizontal=True,
+                    label_visibility="collapsed",
+                    key="active_key_radio",
+                )
+                _chosen_idx = _key_labels.index(_chosen_label)
+                _chosen_key = _all_available_keys[_chosen_idx]
+                if _chosen_key != st.session_state.api_key:
+                    st.session_state.api_key = _chosen_key
+                    st.rerun()
+                st.caption(
+                    f"🟢 Using **{_chosen_label}** — "
+                    f"`{_chosen_key[:7]}…{_chosen_key[-4:]}` "
+                    f"({'primary' if _chosen_idx == 0 else f'backup #{_chosen_idx}'})"
+                )
+
         # ── API Usage / Rate Limit Dashboard ──────────────────────────────
         st.markdown("#### 📊 API Usage")
         _all_keys = [st.session_state.api_key] + (st.session_state.get("extra_api_keys") or [])
@@ -1293,11 +1326,18 @@ with st.sidebar:
         _cur_model = st.session_state.get("model", _MODEL_IDS[0])
         if _cur_model not in _MODEL_IDS:
             _cur_model = _MODEL_IDS[0]
-        st.session_state.model = st.selectbox(
+            st.session_state.model = _cur_model
+
+        def _on_model_change():
+            st.session_state.model = st.session_state["model_select"]
+
+        st.selectbox(
             "Model",
             options=_MODEL_IDS,
             index=_MODEL_IDS.index(_cur_model),
             format_func=lambda x: _MODEL_LABELS.get(x, x),
+            key="model_select",
+            on_change=_on_model_change,
             help="🦙 Llama 4 = newest  ·  💯 GPT-OSS 120B = best quality  ·  ⚡ 8B = fastest",
         )
 
