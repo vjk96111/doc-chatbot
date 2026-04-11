@@ -1437,6 +1437,17 @@ with st.sidebar:
                             )
                             n_chunks = len(result["chunks"])
                             n_imgs   = sum(len(v) for v in result["images"].values())
+                            ocr_used = result.get("ocr_pages", 0)
+                            if ocr_used:
+                                st.write(f"🔍 OCR scanned {ocr_used} image pages (Tesseract)…")
+                            if n_chunks == 0:
+                                status.update(
+                                    label=f"⚠️ {f.name}: No text could be extracted. "
+                                           "The PDF appears to be image-only and OCR produced no output. "
+                                           "Ensure Tesseract is installed (packages.txt).",
+                                    state="error",
+                                )
+                                continue
                             max_page = max((c["page"] for c in result["chunks"]), default=1)
                             st.write(f"🔢 Embedding {n_chunks} text chunks…")
                             st.session_state.vector_store.add_documents(result["chunks"], st.session_state.api_key)
@@ -1445,7 +1456,11 @@ with st.sidebar:
                             st.session_state.doc_full_text[f.name] = "\n".join(c["text"] for c in result["chunks"])
                             # New document uploaded → reset conversation history to start fresh
                             st.session_state.conv_history = []
-                            status.update(label=f"✅ {f.name}  ({n_chunks} sections · {n_imgs} images)", state="complete")
+                            status.update(
+                                label=f"✅ {f.name}  ({n_chunks} sections · {n_imgs} images"
+                                      + (f" · {ocr_used} OCR pages" if ocr_used else "") + ")",
+                                state="complete"
+                            )
                         except Exception as err:
                             status.update(label=f"❌ {f.name}: {err}", state="error")
 
