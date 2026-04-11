@@ -5,8 +5,16 @@ Deploy free:  https://streamlit.io/cloud  (connect GitHub repo)
 """
 
 import base64
+import os
 import time
 from typing import List, Dict, Optional
+
+# Load .env for local development (no-op if file is absent or on Streamlit Cloud)
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
 import streamlit as st
 
@@ -530,10 +538,20 @@ _check_login()
 
 # SESSION STATE
 def _init_state() -> None:
-    secret_key = st.secrets.get("GROQ_API_KEY", "") if hasattr(st, "secrets") else ""
+    # Prefer st.secrets (Streamlit Cloud), then os.environ (local .env via load_dotenv)
+    secret_key = ""
+    try:
+        secret_key = st.secrets.get("GROQ_API_KEY", "")
+    except Exception:
+        pass
+    if not secret_key:
+        secret_key = os.environ.get("GROQ_API_KEY", "")
     defaults: Dict = {
-        "vector_store": VectorStore(),
+        "vector_store":  VectorStore(),
         "messages":      [],
+        # conv_history is separate from messages (display list).
+        # It persists across Clear Chat; resets only on new doc upload or language change.
+        "conv_history":  [],
         "documents":     {},
         "doc_images":    {},
         "doc_full_text": {},
@@ -595,11 +613,21 @@ def _show_sources(chunks: List[Dict]) -> None:
         if key not in seen:
             seen.add(key)
             unique.append(c)
-    with st.expander("📚 Sources used"):
-        for c in unique:
+    with st.expander("📚 Sources used", expanded=False):
+        for i, c in enumerate(unique, start=1):
             score = c.get("relevance_score")
             score_str = f"  *(relevance: {score:.2f})*" if score is not None else ""
-            st.markdown(f"- **{c.get('doc_name','Unknown')}** — {c.get('source','')}  {score_str}")
+            doc   = c.get("doc_name", "Unknown")
+            src   = c.get("source", "")
+            page  = c.get("page")
+            page_str = f"  ·  p.{page}" if page else ""
+            excerpt = c.get("text", "")[:160].replace("\n", " ")
+            if len(c.get("text", "")) > 160:
+                excerpt += "…"
+            st.markdown(
+                f"**{i}.** **{doc}** — {src}{page_str}{score_str}  \n"
+                f"> {excerpt}"
+            )
 
 
 def _collect_images_for_chunks(chunks: List[Dict]) -> List[Dict]:
@@ -677,6 +705,10 @@ _LIST_ALL_PATTERNS = [
     "list all", "list every", "show all", "show every",
     "give me all", "give all", "all the ",
     "complete list", "full list",
+    "list them", "list those", "list these",
+    "can you list", "could you list", "please list",
+    "enumerate all", "enumerate every",
+    "names of all", "names of the",
 ]
 
 def _is_toc_query(question: str) -> bool:
@@ -759,15 +791,27 @@ def _build_toc_chunks(all_chunks: list) -> list:
               "doc_name": "All Documents", "page": 0}]
 
 
+def _deduplicate_chunks(chunks: List[Dict], threshold: float = 0.9) -> List[Dict]:
+    """Remove near-duplicate chunks (>= threshold text similarity). Keeps first occurrence."""
+    from difflib import SequenceMatcher
+    unique: List[Dict] = []
+    for chunk in chunks:
+        is_dup = False
+        for kept in unique:
+            ratio = SequenceMatcher(None, chunk["text"], kept["text"]).ratio()
+            if ratio >= threshold:
+                is_dup = True
+                break
+        if not is_dup:
+            unique.append(chunk)
+    return unique
+
+
 # CORE ACTIONS
 def _handle_question(question: str, model_override: str = None, answer_style: str = None) -> None:
-    # Only pass recent history if the language hasn't changed since those messages
-    # (_lang_version tracks language switches; changes bust the history)
-    _cur_lang_ver = st.session_state.get("_lang_version", 0)
-    recent_history = []
-    for m in st.session_state.messages[-4:]:
-        if m.get("lang_version", 0) == _cur_lang_ver:
-            recent_history.append({"role": m["role"], "content": m["content"][:600]})
+    # Pass the full conversation history stored in conv_history.
+    # This is separate from `messages` (display list) so it survives Clear Chat.
+    chat_history = st.session_state.get("conv_history", []).copy()
 
     # If the user typed a vague follow-up, use the last real question for retrieval
     search_query = _resolve_search_query(question)
@@ -799,19 +843,21 @@ def _handle_question(question: str, model_override: str = None, answer_style: st
                 target = _extract_list_target(search_query)
                 chunks = _scan_all_chunks_for(target, all_chunks)
             elif mode == "Keyword":
-                chunks = keyword_search(search_query, all_chunks, top_k=5)
+                chunks = keyword_search(search_query, all_chunks, top_k=6)
             elif mode == "Hybrid":
-                sem = st.session_state.vector_store.search(search_query, st.session_state.api_key, top_k=5)
-                kw  = keyword_search(search_query, all_chunks, top_k=5)
+                sem = st.session_state.vector_store.search(search_query, st.session_state.api_key, top_k=6)
+                kw  = keyword_search(search_query, all_chunks, top_k=6)
                 seen_texts = set()
                 chunks = []
                 for c in sem + kw:
                     if c["text"] not in seen_texts:
                         seen_texts.add(c["text"])
                         chunks.append(c)
-                chunks = chunks[:6]
+                chunks = chunks[:8]
             else:
-                chunks = st.session_state.vector_store.search(search_query, st.session_state.api_key, top_k=5)
+                chunks = st.session_state.vector_store.search(search_query, st.session_state.api_key, top_k=6)
+            # Deduplicate near-identical chunks (≥ 90% text similarity)
+            chunks = _deduplicate_chunks(chunks)
             t_search = time.time() - t0
 
         # Answer — follow-up questions come back in the same call, no extra delay
@@ -823,7 +869,7 @@ def _handle_question(question: str, model_override: str = None, answer_style: st
                 model_to_use,
                 st.session_state.language,
                 include_followups=True,
-                chat_history=recent_history if recent_history else None,
+                chat_history=chat_history if chat_history else None,
                 answer_style=_style,
                 # comprehensive=True ONLY for TOC queries — not for "list all X" queries
                 comprehensive=_is_toc_query(search_query),
@@ -905,6 +951,9 @@ def _handle_question(question: str, model_override: str = None, answer_style: st
         "t_llm":           round(t_llm, 1),
         "lang_version":    st.session_state.get("_lang_version", 0),
     })
+    # Append both turns to conv_history (persistent, survives Clear Chat)
+    st.session_state.conv_history.append({"role": "user",      "content": question})
+    st.session_state.conv_history.append({"role": "assistant", "content": answer})
 
 
 def _handle_summarize(doc_name: str) -> None:
@@ -963,7 +1012,8 @@ with st.sidebar:
         )
         if lang != st.session_state.language:
             st.session_state.language = lang
-            # Increment version so chat history is NOT passed to model after switch
+            # Language change: reset conv_history so old-language turns aren't sent
+            st.session_state["conv_history"] = []
             st.session_state["_lang_version"] = st.session_state.get("_lang_version", 0) + 1
             st.rerun()
 
@@ -1000,7 +1050,10 @@ with st.sidebar:
 
     st.divider()
 
-    _key_from_secrets = bool(st.secrets.get("GROQ_API_KEY", "")) if hasattr(st, "secrets") else False
+    _key_from_secrets = bool(
+        (st.secrets.get("GROQ_API_KEY", "") if hasattr(st, "secrets") else "")
+        or os.environ.get("GROQ_API_KEY", "")
+    )
     with st.expander("🔑 API Settings", expanded=not bool(st.session_state.api_key)):
         if _key_from_secrets:
             st.success("✅ API key configured (server-side)")
@@ -1076,6 +1129,8 @@ with st.sidebar:
                             st.session_state.documents[f.name]     = {"chunks": n_chunks, "images": n_imgs, "pages": max_page}
                             st.session_state.doc_images[f.name]    = result["images"]
                             st.session_state.doc_full_text[f.name] = "\n".join(c["text"] for c in result["chunks"])
+                            # New document uploaded → reset conversation history to start fresh
+                            st.session_state.conv_history = []
                             status.update(label=f"✅ {f.name}  ({n_chunks} sections · {n_imgs} images)", state="complete")
                         except Exception as err:
                             status.update(label=f"❌ {f.name}: {err}", state="error")
@@ -1129,12 +1184,14 @@ with st.sidebar:
 
     col1, col2 = st.columns(2)
     if col1.button("🗑 Clear chat", use_container_width=True):
-        st.session_state.messages = []
-        st.session_state.feedback = {}
+        # Clear display messages, feedback, and conversation history — document stays loaded
+        st.session_state.messages      = []
+        st.session_state.conv_history  = []
+        st.session_state.feedback      = {}
         st.rerun()
     if col2.button("🔄 Reset all", use_container_width=True):
-        for k in ["messages","documents","doc_images","doc_full_text","feedback","bookmarks"]:
-            st.session_state[k] = [] if isinstance(st.session_state[k], list) else {}
+        for k in ["messages","conv_history","documents","doc_images","doc_full_text","feedback","bookmarks"]:
+            st.session_state[k] = [] if isinstance(st.session_state.get(k, []), list) else {}
         st.session_state.vector_store.clear()
         st.rerun()
 
