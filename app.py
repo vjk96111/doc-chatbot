@@ -754,6 +754,9 @@ _LIST_ALL_STOPWORDS = {
     "list", "all", "every", "show", "give", "me", "the",
     "complete", "full", "a", "an", "of", "in", "from",
     "document", "this", "that", "these", "those",
+    # Trailing filler words that follow the noun (e.g. "topics covered", "sections listed")
+    "covered", "listed", "available", "present", "mentioned",
+    "included", "discussed", "found", "used", "given",
 }
 
 def _extract_list_target(question: str) -> str:
@@ -935,7 +938,15 @@ def _handle_question(question: str, model_override: str = None, answer_style: st
             else:
                 chunks = st.session_state.vector_store.search(search_query, st.session_state.api_key, top_k=6)
             # Deduplicate near-identical chunks (≥ 90% text similarity)
-            chunks = _deduplicate_chunks(chunks)
+            # Skip for synthetic single-chunk results (TOC / topic-scan) — nothing to dedup.
+            # Also skip when chunk count > 20: the O(n²) SequenceMatcher is too slow.
+            _skip_dedup = (
+                _is_toc_query(search_query)
+                or _is_list_all_query(search_query)
+                or len(chunks) > 20
+            )
+            if not _skip_dedup:
+                chunks = _deduplicate_chunks(chunks)
             t_search = time.time() - t0
 
         # Usage callback: accumulates per-key per-model token counts in session state
@@ -1222,6 +1233,37 @@ with st.sidebar:
                     f"🟢 Using **{_chosen_label}** — "
                     f"`{_chosen_key[:7]}…{_chosen_key[-4:]}` "
                     f"({'primary' if _chosen_idx == 0 else f'backup #{_chosen_idx}'})"
+                )
+
+        # ── Active key selector (secrets mode) — shown outside the else block so
+        # Streamlit Cloud users (keys from secrets) can also switch keys.
+        if _key_from_secrets:
+            _sec_keys_all = [st.session_state.api_key] + [
+                k for k in st.session_state.get("extra_api_keys", []) if k
+            ]
+            _sec_keys_all = [k for k in _sec_keys_all if k]
+            if len(_sec_keys_all) > 1:
+                st.caption("🔀 **Active key** — pick which key to use for responses")
+                _sec_labels = [f"Key {i+1}" for i in range(len(_sec_keys_all))]
+                _sec_active = st.session_state.api_key
+                _sec_idx = _sec_keys_all.index(_sec_active) if _sec_active in _sec_keys_all else 0
+                _sec_chosen = st.radio(
+                    "Active key (secrets)",
+                    options=_sec_labels,
+                    index=_sec_idx,
+                    horizontal=True,
+                    label_visibility="collapsed",
+                    key="active_key_radio_secrets",
+                )
+                _sec_chosen_idx = _sec_labels.index(_sec_chosen)
+                _sec_chosen_key = _sec_keys_all[_sec_chosen_idx]
+                if _sec_chosen_key != st.session_state.api_key:
+                    st.session_state.api_key = _sec_chosen_key
+                    st.rerun()
+                st.caption(
+                    f"🟢 Using **{_sec_chosen}** — "
+                    f"`{_sec_chosen_key[:7]}…{_sec_chosen_key[-4:]}` "
+                    f"({'primary' if _sec_chosen_idx == 0 else f'backup #{_sec_chosen_idx}'})"
                 )
 
         # ── API Usage / Rate Limit Dashboard ──────────────────────────────
