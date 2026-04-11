@@ -552,6 +552,19 @@ def _init_state() -> None:
         pass
     if not secret_key:
         secret_key = os.environ.get("GROQ_API_KEY", "")
+    # Read extra API keys from secrets/env (GROQ_API_KEY_2, GROQ_API_KEY_3)
+    extra_keys_from_secrets: List[str] = []
+    for suffix in ["_2", "_3", "_4"]:
+        k = ""
+        try:
+            k = st.secrets.get(f"GROQ_API_KEY{suffix}", "")
+        except Exception:
+            pass
+        if not k:
+            k = os.environ.get(f"GROQ_API_KEY{suffix}", "")
+        if k:
+            extra_keys_from_secrets.append(k)
+
     defaults: Dict = {
         "vector_store":  VectorStore(),
         "messages":      [],
@@ -562,9 +575,11 @@ def _init_state() -> None:
         "doc_images":    {},
         "doc_full_text": {},
         "api_key":       secret_key,
+        # Extra API keys for automatic rotation when primary key hits daily limit
+        "extra_api_keys": extra_keys_from_secrets,
         "model":         "openai/gpt-oss-120b",
         "language":      "English",
-        "dark_mode":     False,
+        "dark_mode":     True,
         "highlight_on":  False,
         "answer_style":  "Normal",   # "Short", "Normal", or "Long"
         "_lang_version": 0,           # increments on language change to bust history
@@ -880,6 +895,7 @@ def _handle_question(question: str, model_override: str = None, answer_style: st
                 # comprehensive=True ONLY for TOC queries — not for "list all X" queries
                 comprehensive=_is_toc_query(search_query),
                 list_all=_is_list_all_query(search_query),
+                extra_keys=st.session_state.get("extra_api_keys") or None,
             )
             t_llm = time.time() - t1
 
@@ -1063,18 +1079,49 @@ with st.sidebar:
     with st.expander("🔑 API Settings", expanded=not bool(st.session_state.api_key)):
         if _key_from_secrets:
             st.success("✅ API key configured (server-side)")
+            # Show how many backup keys are loaded from secrets
+            _n_extra_secrets = len([
+                1 for suffix in ["_2","_3","_4"]
+                if (st.secrets.get(f"GROQ_API_KEY{suffix}","") if hasattr(st,"secrets") else "")
+                   or os.environ.get(f"GROQ_API_KEY{suffix}","")
+            ])
+            if _n_extra_secrets:
+                st.caption(f"✅ {_n_extra_secrets} backup key(s) loaded from server secrets")
         else:
             new_key = st.text_input(
-                "Groq API Key", type="password",
+                "Groq API Key (primary)", type="password",
                 value=st.session_state.api_key, placeholder="gsk_…",
                 help="Get a free key at https://console.groq.com",
             )
             if new_key != st.session_state.api_key:
                 st.session_state.api_key = new_key
             if st.session_state.api_key:
-                st.success("✅ API key configured")
+                st.success("✅ Primary key configured")
             else:
                 st.info("👉 [Get free Groq key →](https://console.groq.com)")
+
+            # Backup keys for automatic rotation when daily limit is hit
+            st.caption(
+                "💡 **Backup keys** — if the primary key hits its daily limit, "
+                "the app automatically tries these in order. "
+                "Each free Groq account gets ~100k tokens/day."
+            )
+            _cur_extras = st.session_state.get("extra_api_keys", [])
+            # Show up to 3 backup key slots
+            _new_extras: List[str] = []
+            for _slot in range(1, 4):
+                _existing_val = _cur_extras[_slot - 1] if _slot - 1 < len(_cur_extras) else ""
+                _bk = st.text_input(
+                    f"Backup key #{_slot}", type="password",
+                    value=_existing_val, placeholder="gsk_…",
+                    key=f"extra_key_{_slot}",
+                )
+                if _bk:
+                    _new_extras.append(_bk)
+            if _new_extras != _cur_extras:
+                st.session_state.extra_api_keys = _new_extras
+            if _new_extras:
+                st.caption(f"✅ {len(_new_extras)} backup key(s) ready")
 
         # Available Groq models — model ID → friendly label
         _MODEL_IDS = [
