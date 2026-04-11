@@ -41,9 +41,6 @@ class VectorStore:
         results = store.search("my question", top_k=5)
     """
 
-    # Lightweight multilingual model — ~17 MB, downloads once
-    _EMBED_MODEL_NAME = "paraphrase-MiniLM-L3-v2"
-
     def __init__(self) -> None:
         self.chunks: List[Dict] = []
         self._embeddings: List[List[float]] = []
